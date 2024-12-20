@@ -10,7 +10,7 @@ use std::pin::Pin;
 use std::future::Future;
 use tokio::io::{AsyncReadExt, BufReader as TokioBufReader};
 use std::sync::Arc;
-
+use zip::ZipArchive;
 
 #[derive(Debug, Default)]
 pub struct VerificationReport {
@@ -60,183 +60,153 @@ impl VerificationReport {
 pub async fn verify_directory(base_path: &Path) -> Result<VerificationReport> {
     let mut report = VerificationReport::default();
     
-    // Find top-level directories
-    let mut entries = fs::read_dir(base_path).await?;
-    while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-        if path.is_dir() {
-            process_directory(&path, &mut report).await?;
+    // Read the sources file
+    let sources = include_str!("../sources");
+    let mut rdr = csv::Reader::from_reader(sources.as_bytes());
+    
+    // Process each enabled source
+    for result in rdr.records() {
+        let record = result?;
+        if record.get(1) == Some("Yes") && record.get(2) == Some("Connected") {
+            if let Some(url) = record.get(0) {
+                let relative_path = url.split("VUM/PRODUCTION/").nth(1).unwrap_or(url);
+                let xml_path = base_path.join(relative_path);
+                if xml_path.exists() {
+                    process_xml_file(&xml_path, base_path, &mut report).await?;
+                } else {
+                    warn!("Source XML file not found: {}", xml_path.display());
+                }
+            }
         }
     }
 
     Ok(report)
 }
 
-async fn process_directory(dir: &Path, report: &mut VerificationReport) -> Result<()> {
-    // Look for index.xml files first
-    let mut index_found = false;
-    let mut entries = fs::read_dir(dir).await?;
-    
-    while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-        if path.is_file() && path.file_name()
-            .and_then(|n| n.to_str())
-            .map(|n| n.contains("index.xml"))
-            .unwrap_or(false) 
-        {
-            index_found = true;
-            process_xml_file(&path, dir, report).await
-                .with_context(|| format!("Failed to process index file: {}", path.display()))?;
-        }
-    }
-
-    // If no index.xml found, scan for vmware.xml files
-    if !index_found {
-        scan_for_xml_files(dir, report).await?;
-    }
-
-    Ok(())
-}
-
 fn process_xml_file<'a>(
     xml_path: &'a Path,
-    base_dir: &'a Path,
+    base_path: &'a Path,
     report: &'a mut VerificationReport,
-) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
     Box::pin(async move {
         if report.processed_xmls.contains(xml_path) {
             return Ok(());
         }
         
+        info!("Processing XML file: {}", xml_path.display());
         report.processed_xmls.insert(xml_path.to_path_buf());
         
-        let content = match fs::read_to_string(xml_path).await {
-            Ok(content) => content,
-            Err(e) => {
-                report.add_error(xml_path.to_path_buf(), format!("Failed to read XML: {}", e));
-                return Ok(());
-            }
-        };
-
+        let content = fs::read_to_string(xml_path).await?;
         let mut parser = DepotParser::new(&content);
         
-        // Process VIB files
-        if let Ok(vibs) = parser.parse_vib_files() {
-            process_vib_files(vibs, base_dir, report).await?;
-        }
-
-        // Process vendor index
-        if let Ok(vendors) = parser.parse_vendors() {
-            for vendor in vendors {
-                let vendor_path = base_dir.join(&vendor.relative_path).join(&vendor.index_file);
-                process_xml_file(&vendor_path, base_dir, report).await?;
-            }
-        }
-
-        // Process packages
-        if let Ok(packages) = parser.parse_packages() {
-            for package in packages {
-                let package_path = base_dir.join(&package.url);
-                if package_path.extension().and_then(|e| e.to_str()) == Some("zip") {
-                    process_zip_file(&package_path, base_dir, report).await?;
+        // Process depot index
+        if xml_path.to_string_lossy().contains("vmw-depot-index.xml") {
+            if let Ok(vendors) = parser.parse_vendors() {
+                for vendor in vendors {
+                    let vendor_path = base_path
+                        .join(&vendor.relative_path)
+                        .join(&vendor.index_file);
+                    if vendor_path.exists() {
+                        process_xml_file(&vendor_path, base_path, report).await?;
+                    } else {
+                        warn!("Vendor XML not found: {}", vendor_path.display());
+                    }
                 }
             }
+        }
+
+        // Process packages and their metadata
+        if let Ok(packages) = parser.parse_packages() {
+            for package in packages {
+                let package_path = base_path.join(&package.url);
+                if package_path.exists() {
+                    if package_path.extension().and_then(|e| e.to_str()) == Some("zip") {
+                        process_zip_file(&package_path, base_path, report).await?;
+                    }
+                } else {
+                    warn!("Package file not found: {}", package_path.display());
+                }
+            }
+        }
+
+        // Process addon metadata
+        if let Ok(addon_metadata) = parser.parse_addon_metadata() {
+            for metadata in addon_metadata {
+                let metadata_path = base_path.join(&metadata.url);
+                if metadata_path.exists() {
+                    if metadata_path.extension().and_then(|e| e.to_str()) == Some("zip") {
+                        process_zip_file(&metadata_path, base_path, report).await?;
+                    }
+                } else {
+                    warn!("Addon metadata file not found: {}", metadata_path.display());
+                }
+            }
+        }
+
+        // Process VIB files directly in this XML
+        if let Ok(vibs) = parser.parse_vib_files() {
+            process_vib_files(vibs, base_path, report).await?;
         }
 
         Ok(())
     })
 }
 
-async fn scan_for_xml_files(dir: &Path, report: &mut VerificationReport) -> Result<()> {
-    let mut stack = vec![dir.to_path_buf()];
-
-    while let Some(current_dir) = stack.pop() {
-        let mut entries = fs::read_dir(&current_dir).await?;
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    match ext {
-                        "xml" if path.to_string_lossy().contains("vmware.xml") => {
-                            process_xml_file(&path, dir, report).await?;
-                        },
-                        "zip" => {
-                            process_zip_file(&path, dir, report).await?;
-                        },
-                        _ => {}
-                    }
-                }
-            } else if path.is_dir() {
-                stack.push(path);
-            }
-        }
-    }
-    
-    Ok(())
-}
-
-async fn process_zip_file(zip_path: &Path, base_dir: &Path, report: &mut VerificationReport) -> Result<()> {
+async fn process_zip_file(zip_path: &Path, base_path: &Path, report: &mut VerificationReport) -> Result<()> {
     if report.processed_zips.contains(zip_path) {
         return Ok(());
     }
 
+    info!("Processing ZIP file: {}", zip_path.display());
     report.processed_zips.insert(zip_path.to_path_buf());
 
-    // Read the entire file into memory first
-    let zip_data = match tokio::fs::read(zip_path).await {
-        Ok(data) => data,
-        Err(e) => {
-            report.add_error(zip_path.to_path_buf(), format!("Failed to read ZIP: {}", e));
-            return Ok(());
-        }
-    };
-
-    // Process ZIP contents in a blocking task
-    match tokio::task::spawn_blocking(move || -> Result<Vec<VibFile>> {
+    let zip_data = fs::read(zip_path).await?;
+    
+    let vib_files = tokio::task::spawn_blocking(move || -> Result<Vec<VibFile>> {
         let reader = std::io::Cursor::new(zip_data);
-        let mut archive = zip::ZipArchive::new(reader)?;
+        let mut archive = ZipArchive::new(reader)?;
         let mut vib_files = Vec::new();
 
         for i in 0..archive.len() {
             if let Ok(mut file) = archive.by_index(i) {
                 if file.name().ends_with("vmware.xml") {
                     let mut contents = String::new();
-                    if file.read_to_string(&mut contents).is_ok() {
-                        let mut parser = DepotParser::new(&contents);
-                        if let Ok(files) = parser.parse_vib_files() {
-                            vib_files.extend(files);
-                        }
+                    file.read_to_string(&mut contents)?;
+                    let mut parser = DepotParser::new(&contents);
+                    if let Ok(files) = parser.parse_vib_files() {
+                        vib_files.extend(files);
                     }
                 }
             }
         }
         Ok(vib_files)
-    }).await? {
-        Ok(vibs) => process_vib_files(vibs, base_dir, report).await?,
-        Err(e) => report.add_error(zip_path.to_path_buf(), format!("Failed to process ZIP: {}", e)),
-    }
+    }).await??;
 
+    process_vib_files(vib_files, base_path, report).await?;
     Ok(())
 }
 
-async fn process_vib_files(vibs: Vec<VibFile>, base_dir: &Path, report: &mut VerificationReport) -> Result<()> {
+async fn process_vib_files(vibs: Vec<VibFile>, base_path: &Path, report: &mut VerificationReport) -> Result<()> {
     for vib in vibs {
-        let vib_path = base_dir.join(&vib.relative_path);
+        let vib_path = base_path.join(&vib.relative_path);
+        report.files_checked += 1;
         
         if !vib_path.exists() {
             report.vib_files_missing.push(vib_path);
             continue;
         }
 
-        report.files_checked += 1;
-        
         match verify_checksum(&vib_path, &vib.checksum, &vib.checksum_type).await {
-            Ok(true) => (),
+            Ok(true) => {
+                info!("Verified: {}", vib_path.display());
+            },
             Ok(false) => {
+                warn!("Checksum mismatch: {}", vib_path.display());
                 report.checksum_mismatches.push((vib_path, vib.checksum));
             },
             Err(e) => {
-                report.add_error(vib_path, format!("Checksum verification failed: {}", e));
+                error!("Failed to verify {}: {}", vib_path.display(), e);
+                report.add_error(vib_path, format!("Verification failed: {}", e));
             }
         }
     }
