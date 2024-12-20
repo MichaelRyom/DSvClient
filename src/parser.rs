@@ -1,7 +1,6 @@
-use anyhow::Result;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
-use std::io::BufRead;
+use anyhow::Result;  // Add this import
 
 #[derive(Debug)]
 pub struct Vendor {

@@ -6,20 +6,26 @@ use std::fs::File;
 
 mod downloader;
 mod parser;
+mod verify;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     
-    // Check for --verify flag
-    let verify = args.contains(&"--verify".to_string());
+    // Check for --verify flag but exclude it from being treated as a path
+    let verify = args.iter().any(|arg| arg == "--verify");
+    
+    // Get the download path by finding the first argument that isn't --verify
+    let download_path = args.iter()
+        .skip(1) // Skip program name
+        .find(|arg| *arg != "--verify")
+        .map(|path| PathBuf::from(path))
+        .ok_or_else(|| {
+            eprintln!("Usage: {} <download_path> [--verify]", args[0]);
+            anyhow::anyhow!("No download path provided")
+        })?;
 
-    if args.len() < 2 || args.len() > 3 {
-        println!("Usage: {} <download_path> [--verify]", args[0]);
-        std::process::exit(1);
-    }
-
-    let download_path = PathBuf::from(&args[1]);
+    info!("Using download path: {}", download_path.display());
     std::fs::create_dir_all(&download_path)?;
     
     // Set up logging
@@ -42,20 +48,15 @@ async fn main() -> Result<()> {
     
     if verify {
         info!("Starting verification process...");
-        match service.verify_downloads().await {
-            Ok((checked, missing, wrong_checksum)) => {
-                if checked == 0 {
-                    warn!("No files were checked. Are you sure the directory contains downloaded VMware files?");
-                    warn!("Directory: {}", download_path.display());
-                }
-                if missing > 0 || wrong_checksum > 0 {
-                    warn!("Verification found issues:");
-                    warn!("  - {} files missing", missing);
-                    warn!("  - {} files with wrong checksum", wrong_checksum);
+        match verify::verify_directory(&download_path).await {
+            Ok(report) => {
+                report.print_summary();
+                if !report.vib_files_missing.is_empty() || 
+                   !report.checksum_mismatches.is_empty() ||
+                   !report.error_files.is_empty() {
                     std::process::exit(1);
-                } else if checked > 0 {
-                    info!("All {} files verified successfully!", checked);
                 }
+                info!("\nAll files verified successfully!");
             }
             Err(e) => {
                 error!("Verification failed: {}", e);
@@ -73,15 +74,22 @@ async fn main() -> Result<()> {
             warn!("Errors occurred during retry attempts: {}", e);
         }
         
+        // Get and display file type statistics
+        let stats = service.get_file_type_stats();
+        info!("\nFile format summary:");
+        for (ext, count) in stats {
+            info!("  {}: {} files", ext, count);
+        }
+        
         // Summarize files not downloaded
         let failed_downloads = service.get_failed_downloads();
         if !failed_downloads.is_empty() {
-            warn!("Summary of files not downloaded:");
+            warn!("\nSummary of files not downloaded:");
             for url in failed_downloads {
                 warn!("  {}", url);
             }
         } else {
-            info!("All files downloaded successfully.");
+            info!("\nAll files downloaded successfully.");
         }
     }
     
