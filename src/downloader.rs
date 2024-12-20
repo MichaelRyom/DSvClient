@@ -14,15 +14,13 @@ use std::collections::{HashSet, HashMap};
 use std::sync::Mutex;
 use sha2::{Sha256, Digest};
 use std::time::Duration;
-use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
-use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
-use tokio_retry::{Retry, strategy::FixedInterval};
-use reqwest::Client as ReqwestClient;
-use reqwest::StatusCode;
+use hyper::{Client, Body, Request, StatusCode};
+use hyper_tls::HttpsConnector;
+use hyper::client::HttpConnector;
+use hyper::body::HttpBody as _;
 use rayon::ThreadPoolBuilder;
 use std::io::Read;
-use rayon::prelude::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio_retry::{Retry, strategy::FixedInterval};
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 type DownloadResult = Result<()>;
@@ -36,7 +34,7 @@ const MAX_RETRIES: u32 = 5;
 #[derive(Clone)]
 pub struct DownloadService {
     download_path: PathBuf,
-    client: ClientWithMiddleware,
+    client: Client<HttpsConnector<HttpConnector>>,
     semaphore: Arc<Semaphore>,
     downloaded: DownloadTracker,
     failed_downloads: Arc<Mutex<HashMap<String, (PathBuf, Option<(String, String)>)>>>,
@@ -46,18 +44,7 @@ pub struct DownloadService {
 }
 
 impl DownloadService {
-    pub fn new(download_path: PathBuf) -> Self {
-        let retry_policy = RetryTransientMiddleware::new_with_policy(
-            ExponentialBackoff::builder().build_with_max_retries(5)
-        );
-        
-        let client = ClientBuilder::new(ReqwestClient::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .expect("Failed to build reqwest client"))
-            .with(retry_policy)
-            .build();
-
+    pub fn new(download_path: PathBuf, client: Client<HttpsConnector<HttpConnector>>) -> Self {
         let compute_pool = ThreadPoolBuilder::new()
             .num_threads(num_cpus::get())
             .stack_size(2 * 1024 * 1024)
@@ -128,7 +115,7 @@ impl DownloadService {
     }
 
     pub async fn process_sources(&self) -> Result<()> {
-        let mut rdr = csv::Reader::from_reader(include_str!("../sources.csv").as_bytes());
+        let mut rdr = csv::Reader::from_reader(include_str!("../sources").as_bytes());
 
         let mut tasks = Vec::new();
 
@@ -186,13 +173,18 @@ impl DownloadService {
 
         self.download_package(zip_url.clone(), None).await?;
         
-        let response = self.client.get(&zip_url)
-            .send()
-            .await?
-            .bytes()
-            .await?;
+        let req = Request::builder()
+            .uri(&zip_url)
+            .body(Body::empty())
+            .expect("Failed to build request");
 
-        let zip_data = response.to_vec();
+        let mut response = self.client.request(req).await?;
+        let mut zip_data = Vec::new();
+
+        while let Some(chunk) = response.body_mut().data().await {
+            let chunk = chunk?;
+            zip_data.extend_from_slice(&chunk);
+        }
 
         let vib_files = task::spawn_blocking(move || -> Result<Vec<VibFile>> {
             let reader = std::io::Cursor::new(zip_data);
@@ -251,12 +243,20 @@ impl DownloadService {
         println!("\n=== Processing URL ===");
         println!("Input URL: {}", url);
         
-        let content = self.client.get(&url)
-            .send()
-            .await?
-            .text()
-            .await?
-            .to_string();
+        let req = Request::builder()
+            .uri(&url)
+            .body(Body::empty())
+            .expect("Failed to build request");
+
+        let mut response = self.client.request(req).await?;
+        let mut content = Vec::new();
+
+        while let Some(chunk) = response.body_mut().data().await {
+            let chunk = chunk?;
+            content.extend_from_slice(&chunk);
+        }
+
+        let content = String::from_utf8(content)?;
 
         self.save_xml(&url, &content).await?;
 
@@ -400,7 +400,7 @@ impl DownloadService {
         let permit = self.semaphore.clone().acquire_owned().await?;
 
         println!("Starting download for: {}", url);
-        
+
         if let Some(parent) = full_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -430,14 +430,6 @@ impl DownloadService {
             }
             Err(e) => {
                 let _ = tokio::fs::remove_file(&full_path).await;
-                if let Some(reqwest_error) = e.downcast_ref::<reqwest::Error>() {
-                    if let Some(status) = reqwest_error.status() {
-                        if status == StatusCode::NOT_FOUND {
-                            warn!("File not found (404): {}", url);
-                            return Ok(());
-                        }
-                    }
-                }
                 self.add_failed_download(url.clone(), full_path.clone(), expected_checksum);
                 eprintln!("Failed to download {}: {}", url, e);
                 Err(e)
@@ -475,16 +467,15 @@ impl DownloadService {
     }
 
     fn should_retry(error: &anyhow::Error) -> bool {
-        if let Some(reqwest_error) = error.downcast_ref::<reqwest::Error>() {
-            if let Some(status) = reqwest_error.status() {
-                if status == StatusCode::NOT_FOUND {
-                    return false;
-                }
-                if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                    return true;
-                }
-            }
-            reqwest_error.is_connect() || reqwest_error.is_timeout()
+        if let Some(hyper_error) = error.downcast_ref::<hyper::Error>() {
+            // Check if it's a connection error or timeout
+            hyper_error.is_connect() || hyper_error.is_timeout()
+        } else if error.to_string().contains("status: 429") {
+            // Check for rate limiting (TOO_MANY_REQUESTS)
+            true
+        } else if error.to_string().contains("status: 5") {
+            // Check for server errors (5xx)
+            true
         } else {
             false
         }
@@ -493,25 +484,18 @@ impl DownloadService {
     async fn download_with_retry(&self, url: &str, full_path: &PathBuf) -> Result<()> {
         let retry_strategy = FixedInterval::new(Duration::from_secs(1))
             .take(3);
-        
+
         Retry::spawn(retry_strategy, || async {
-            let response = self.client.get(url)
-                .send()
-                .await
-                .map_err(|e| {
-                    if let Some(error) = e.status() {
-                        if error == StatusCode::NOT_FOUND {
-                            warn!("File not found (404): {}", url);
-                            return e;
-                        }
-                    }
-                    warn!("Request failed: {}", e);
-                    e
-                })?;
+            let req = Request::builder()
+                .uri(url)
+                .body(Body::empty())
+                .expect("Failed to build request");
+
+            let mut response = self.client.request(req).await?;
 
             let status = response.status();
             let headers = response.headers().clone();
-            let content_length = response.content_length();
+            let content_length = response.body().size_hint().upper();
 
             info!("Response info for {}:", url);
             info!("Status: {}", status);
@@ -527,8 +511,8 @@ impl DownloadService {
                     warn!("File not found (404): {}", url);
                     return Err(anyhow::anyhow!("HTTP 404: File not found"));
                 }
-                let text = response.text().await.unwrap_or_default();
-                warn!("Server returned error status: {} with body: {}", status, text);
+                let text = hyper::body::to_bytes(response.body_mut()).await.unwrap_or_default();
+                warn!("Server returned error status: {} with body: {:?}", status, text);
                 return Err(anyhow::anyhow!("HTTP error: {}", status));
             }
 
@@ -536,20 +520,13 @@ impl DownloadService {
                 .ok_or_else(|| anyhow::anyhow!("Content length not available"))?;
 
             let mut file = File::create(full_path).await?;
-            let content = match response.bytes().await {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    warn!("Error decoding response body for {}:", url);
-                    warn!("Error details: {:#?}", e);
-                    warn!("Response status: {}", status);
-                    warn!("Response headers: {:#?}", headers);
-                    return Err(anyhow::anyhow!("Failed to decode response body: {}", e));
-                }
-            };
+            let mut downloaded = 0;
 
-            let downloaded = content.len() as u64;
-
-            file.write_all(&content).await?;
+            while let Some(chunk) = response.body_mut().data().await {
+                let chunk = chunk?;
+                file.write_all(&chunk).await?;
+                downloaded += chunk.len() as u64;
+            }
 
             if downloaded != total_size {
                 let _ = tokio::fs::remove_file(full_path).await;

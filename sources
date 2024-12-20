@@ -3,6 +3,3 @@
 "https://hostupdate.vmware.com/software/VUM/PRODUCTION/main/vmw-depot-index.xml","Yes","Connected","VMware","Host","Download vSphere ESXi and ESX patches"
 "https://hostupdate.vmware.com/software/VUM/PRODUCTION/iovp-main/vmw-depot-index.xml","Yes","Connected","VMware","Host","VMware Certified Async Drivers for ESXi"
 "https://hostupdate.vmware.com/software/VUM/PRODUCTION/vmtools-main/vmw-depot-index.xml","Yes","Connected","VMware","Host","VMware Async Releases for VM-tools on ESXi"
-
-https://hostupdate.vmware.com/software/VUM/PRODUCTION/addon-main/addon/LVO/LVO-ESXi-8.0-Addon-cumulative_metadata.zip:
-// Summary of files not downloaded will be logged in download_errors.log

@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use log::{LevelFilter, warn, info, error};
 use simplelog::{WriteLogger, CombinedLogger, TermLogger, Config, TerminalMode, ColorChoice};
 use std::fs::File;
+use hyper::Client;
+use hyper_tls::HttpsConnector;
 
 mod downloader;
 mod parser;
@@ -44,7 +46,9 @@ async fn main() -> Result<()> {
         ),
     ])?;
 
-    let service = downloader::DownloadService::new(download_path.clone());
+    let https = HttpsConnector::new();
+    let client = Client::builder().build::<_, hyper::Body>(https);
+    let service = downloader::DownloadService::new(download_path.clone(), client);
     
     if verify {
         info!("Starting verification process...");
