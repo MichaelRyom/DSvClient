@@ -1,3 +1,4 @@
+#![allow(unused)]
 use anyhow::Result;
 use std::path::PathBuf;
 use log::{LevelFilter, warn, info, error};
@@ -52,7 +53,7 @@ async fn main() -> Result<()> {
     let https = HttpsConnector::new();
     let client = Client::builder(hyper_util::rt::TokioExecutor::new())
         .build::<_, Empty<Bytes>>(https);
-    let service = downloader::DownloadService::new(download_path.clone(), client);
+    let service = downloader::Downloader::new(download_path.clone(), client);
     
     if verify {
         info!("Starting verification process...");

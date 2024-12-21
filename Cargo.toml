@@ -10,7 +10,7 @@ hyper-util = { version = "0.1", features = ["full"] }
 http-body-util = "0.1"
 bytes = "1.0"
 hyper-tls = "0.6.0"
-quick-xml = { version = "0.37.1", features = ["async-tokio"] }
+quick-xml = { version = "0.37.1", features = ["async-tokio", "serialize", "serde"] }
 csv = "1.2"
 anyhow = "1.0"
 futures = "0.3"
@@ -23,3 +23,4 @@ sha2 = "0.10"
 rayon = "1.5"
 num_cpus = "1.13.0"
 async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }

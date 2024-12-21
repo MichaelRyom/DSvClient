@@ -1,229 +1,338 @@
+#![allow(unused)]
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::collections::{HashSet, HashMap};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};  // Change to use tokio's Mutex
-use log::{info, warn};
+use log::{info, warn, debug};
 use hyper_util::client::legacy::Client;
 use hyper_tls::HttpsConnector;
 use http_body_util::Empty;
 use bytes::Bytes;
 use crate::process::{ProcessManager, Source, FileType};
 use crate::verify::{self, VerificationManager};
+use crate::parser::{XmlParser, VmwarePackage, DepotParser, AddonPackage, AddonMetadata};  // Add VmwarePackage, AddonPackage, and AddonMetadata to imports
+use std::pin::Pin;
+use std::future::Future;
 
-type DownloadTracker = Arc<Mutex<HashSet<(String, String)>>>;  // Updated to tokio Mutex
-
-const MAX_CONCURRENT_DOWNLOADS: usize = 5;
+type DownloadTracker = Arc<Mutex<HashSet<PathBuf>>>;
 
 #[derive(Clone)]
-pub struct DownloadService {
-    download_path: PathBuf,
+pub struct Downloader {
+    base_path: PathBuf,
     client: Client<HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>, Empty<Bytes>>,
-    semaphore: Arc<Semaphore>,
     downloaded: DownloadTracker,
-    failed_downloads: Arc<Mutex<HashMap<String, (PathBuf, Option<(String, String)>)>>>,
-    file_types: Arc<Mutex<HashMap<String, usize>>>,
-    processor: Arc<Mutex<ProcessManager>>,
-    verification_manager: Arc<VerificationManager>,
+    failed: Arc<Mutex<HashMap<String, (PathBuf, Option<(String, String)>)>>>,
+    processor: Arc<ProcessManager>,
+    verifier: Arc<VerificationManager>,
+    xml_parser: Arc<XmlParser>,
 }
 
-impl DownloadService {
-    pub fn new(download_path: PathBuf, client: Client<HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>, Empty<Bytes>>) -> Self {
-        let processor = ProcessManager::new(client.clone(), download_path.clone());
-        let verification_manager = Arc::new(VerificationManager::new());
+#[derive(Debug)]
+struct SourceEntry {
+    url: String,
+    enabled: bool,
+    connected: bool,
+}
 
+impl Downloader {
+    pub fn new(base_path: PathBuf, client: Client<HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>, Empty<Bytes>>) -> Self {
         Self {
-            download_path: download_path.clone(),
-            client,
-            semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_DOWNLOADS)),
+            base_path: base_path.clone(),
+            client: client.clone(),
             downloaded: Arc::new(Mutex::new(HashSet::new())),
-            failed_downloads: Arc::new(Mutex::new(HashMap::new())),
-            file_types: Arc::new(Mutex::new(HashMap::new())),
-            processor: Arc::new(Mutex::new(processor)),  // Wrap in Arc<Mutex>
-            verification_manager,
+            failed: Arc::new(Mutex::new(HashMap::new())),
+            processor: Arc::new(ProcessManager::new(client.clone(), base_path.clone())),
+            verifier: Arc::new(VerificationManager::new_with_concurrency(100)),
+            xml_parser: Arc::new(XmlParser::new()),
         }
     }
 
-    async fn is_downloaded(&self, url: &str, path: &PathBuf) -> bool {  // Make async
-        let downloaded = self.downloaded.lock().await;  // Change to async lock
-        downloaded.contains(&(url.to_string(), path.to_string_lossy().to_string()))
-    }
+    async fn parse_vendors(&self, url: &str, content: &str) -> Result<Vec<(String, String)>> {
+        let mut parser = DepotParser::new(content);
+        let mut vendor_urls = Vec::new();
 
-    async fn mark_as_downloaded(&self, url: &str, path: &PathBuf) {  // Make async
-        let mut downloaded = self.downloaded.lock().await;  // Change to async lock
-        downloaded.insert((url.to_string(), path.to_string_lossy().to_string()));
-    }
-
-    async fn add_failed_download(&self, url: String, path: PathBuf, checksum: Option<(String, String)>) {  // Make async
-        if !url.contains("404") {
-            let mut failed = self.failed_downloads.lock().await;  // Change to async lock
-            failed.insert(url, (path, checksum));
+        if let Ok(vendors) = parser.parse_vendors() {
+            for vendor in vendors {
+                let vendor_url = format!(
+                    "{}/{}/{}", 
+                    url, 
+                    vendor.relative_path, 
+                    vendor.indexfile
+                );
+                debug!("Found vendor {} at {}", vendor.name, vendor_url);
+                vendor_urls.push((vendor.name.clone(), vendor_url.clone()));
+            }
         }
+
+        Ok(vendor_urls)
     }
 
-    pub async fn retry_failed_downloads(&self) -> Result<()> {
-        let failed_downloads = {
-            let failed = self.failed_downloads.lock().await;  // Change to async lock
-            if failed.is_empty() {
-                info!("No failed downloads to retry");
-                return Ok(());
+    pub async fn process_repository(&self, url: &str) -> Result<()> {
+        info!("Processing repository: {}", url);
+        
+        // Get base URL without filename
+        let base_url = url.rsplit_once('/').map(|(base, _)| base).unwrap_or(url);
+        
+        // Download and parse the main index XML
+        let index_content = self.download_xml(url).await?;
+        let vendors = self.xml_parser.parse_vendor_list(&index_content)?;
+        
+        // Process each vendor
+        for vendor in vendors {
+            // Construct vendor URL using base URL
+            let vendor_url = format!("{}/{}/{}", 
+                base_url,
+                vendor.relative_path, 
+                vendor.indexfile
+            );
+            info!("Processing vendor {} at {}", vendor.name, vendor_url);
+            
+            // Download and parse vendor index
+            match self.download_xml(&vendor_url).await {
+                Ok(vendor_content) => {
+                    if let Ok(metadata_list) = self.xml_parser.parse_metadata_list(&vendor_content) {
+                        for metadata in metadata_list {
+                            let metadata_url = format!("{}/{}/{}", 
+                                base_url,
+                                vendor.relative_path, 
+                                metadata.url
+                            );
+                            if let Err(e) = self.process_metadata(&metadata_url).await {
+                                warn!("Error processing metadata {}: {}", metadata_url, e);
+                            }
+                        }
+                    } else {
+                        // Try parsing as addon index if metadata list fails
+                        let mut parser = DepotParser::new(&vendor_content);
+                        if let Ok(addons) = parser.parse_addon_index() {
+                            for addon in addons {
+                                let addon_url = if addon.url.starts_with("http") {
+                                    addon.url
+                                } else {
+                                    format!("{}/{}/{}", base_url, vendor.relative_path, addon.url)
+                                };
+                                if let Err(e) = self.process_metadata(&addon_url).await {
+                                    warn!("Error processing addon {}: {}", addon_url, e);
+                                }
+                            }
+                        } else {
+                            warn!("Failed to parse vendor index from {}", vendor_url);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Error downloading vendor index {}: {}", vendor_url, e);
+                }
             }
-            info!("Retrying {} failed downloads...", failed.len());
-            failed.clone()
-        };
-
-        for (url, (_path, checksum)) in failed_downloads {
-            info!("Retrying download: {}", url);
-            if let Err(e) = self.download_file(&url, checksum).await {
-                warn!("Retry failed for {}: {}", url, e);
-            } else {
-                let mut failed = self.failed_downloads.lock().await;  // Change to async lock
-                failed.remove(&url);
-                info!("Successfully retried: {}", url);
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
 
         Ok(())
     }
 
     pub async fn process_sources(&self) -> Result<()> {
-        info!("Starting download process using sources file...");
-        let mut rdr = csv::Reader::from_reader(include_str!("../sources").as_bytes());
-        
-        // Create a verification manager for checksums
-        let verification_manager = VerificationManager::new();
+        let sources = self.read_sources_file().await?;
+        for source in sources {
+            if source.enabled && source.connected {
+                info!("Processing enabled source: {}", source.url);
+                if let Err(e) = self.process_repository(&source.url).await {
+                    warn!("Error processing {}: {}", source.url, e);
+                    continue;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn read_sources_file(&self) -> Result<Vec<SourceEntry>> {
+        let sources_file = PathBuf::from("sources");
+        if !sources_file.exists() {
+            return Err(anyhow::anyhow!("Sources file not found"));
+        }
+
+        let content = tokio::fs::read_to_string(sources_file).await?;
+        let mut sources = Vec::new();
+        let mut rdr = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .from_reader(content.as_bytes());
 
         for result in rdr.records() {
             let record = result?;
-            if record.get(1) == Some("Yes") && record.get(2) == Some("Connected") {
-                if let Some(url) = record.get(0) {
-                    info!("Processing source: {}", url);
-                    let source = Source::Http(url.to_string());
-                    let processor = self.processor.lock().await;
-                    
-                    // First try to process the index file
-                    let files = processor.process_source(source.clone()).await?;
-                    drop(processor);
-
-                    for file in files {
-                        let target_path = self.download_path.join(&file.relative_path);
-                        
-                        // Store checksum info in a reusable structure
-                        let checksum_info = match (&file.checksum, &file.checksum_type) {
-                            (Some(checksum), Some(checksum_type)) => Some((checksum.clone(), checksum_type.clone())),
-                            _ => None,
-                        };
-                        
-                        // Check if file exists and verify checksum if available
-                        if target_path.exists() {
-                            info!("Found existing file: {}", target_path.display());
-                            if let Some((checksum, checksum_type)) = &checksum_info {
-                                match verification_manager.verify_checksum(&target_path, checksum, checksum_type).await {
-                                    Ok(true) => {
-                                        info!("Checksum verified, skipping download: {}", target_path.display());
-                                        self.mark_as_downloaded(&url, &target_path).await;
-                                        continue;
-                                    }
-                                    Ok(false) => {
-                                        warn!("Checksum mismatch, will redownload: {}", target_path.display());
-                                    }
-                                    Err(e) => {
-                                        warn!("Checksum verification failed: {}", e);
-                                    }
-                                }
-                            }
-                        }
-
-                        // Download the file if needed
-                        if let Source::Http(url) = &file.source {
-                            let checksum = checksum_info.clone();
-                            if let Err(e) = self.download_file(url, checksum.clone()).await {
-                                warn!("Failed to download {}: {}", url, e);
-                                self.add_failed_download(url.clone(), target_path, checksum).await;
-                            } else {
-                                info!("Successfully downloaded: {}", target_path.display());
-                                
-                                // Verify downloaded file
-                                if let Some((checksum, checksum_type)) = &checksum_info {
-                                    if !verification_manager.verify_checksum(&target_path, checksum, checksum_type).await? {
-                                        warn!("Post-download checksum verification failed: {}", target_path.display());
-                                        self.add_failed_download(
-                                            url.clone(), 
-                                            target_path, 
-                                            Some((checksum_type.clone(), checksum.clone()))
-                                        ).await;
-                                        continue;
-                                    }
-                                }
-
-                                // Process ZIP files for additional content
-                                if matches!(file.file_type, FileType::Zip) {
-                                    info!("Processing downloaded ZIP file: {}", target_path.display());
-                                    let processor = self.processor.lock().await;
-                                    if let Ok(zip_files) = processor.process_source(Source::Path(target_path.clone())).await {
-                                        drop(processor);
-                                        for zip_file in zip_files {
-                                            if let Source::Http(url) = zip_file.source {
-                                                self.download_file(&url, None).await?;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            if let (Some(url), Some(enabled), Some(status)) = (
+                record.get(0),
+                record.get(1),
+                record.get(2)
+            ) {
+                // Remove quotes from URL if present
+                let clean_url = url.trim_matches('"').to_string();
+                sources.push(SourceEntry {
+                    url: clean_url,
+                    enabled: enabled.trim() == "Yes",
+                    connected: status.trim() == "Connected",
+                });
             }
         }
 
+        if sources.is_empty() {
+            warn!("No valid sources found in sources file");
+        }
+
+        Ok(sources)
+    }
+
+    pub async fn process_sources_file(&self) -> Result<()> {
+        let sources_file = PathBuf::from("sources");  // Changed to look in current dir
+        if (!sources_file.exists()) {
+            warn!("Sources file not found: {}", sources_file.display());
+            return Ok(());
+        }
+        let content = tokio::fs::read_to_string(sources_file).await?;
+        for line in content.lines() {
+            let url = line.trim();
+            if url.starts_with("\"") {  // Skip CSV header and handle quoted URLs
+                continue;
+            }
+            if url.is_empty() { continue; }
+            self.process_repository(url).await?;
+        }
         Ok(())
     }
 
-    async fn download_file(&self, url: &str, checksum: Option<(String, String)>) -> Result<()> {
-        let _permit = self.semaphore.clone().acquire_owned().await?;
+    async fn process_metadata(&self, url: &str) -> Result<()> {
+        info!("Processing metadata from URL: {}", url);
+        
+        // Extract base URL for resolving relative paths
+        let base_url = url.rsplit_once('/').map(|(base, _)| base).unwrap_or(url);
+        
         let source = Source::Http(url.to_string());
-        
-        let mut processor = self.processor.lock().await;
-        let files = processor.process_source(source).await?;
-        drop(processor);
-        
+        let files = self.processor.process_source(source).await?;
+        info!("Found {} files to process", files.len());
+
         for file in files {
-            if let Source::Http(url) = file.source {
-                let path = self.download_path.join(&file.relative_path);
-                if self.is_downloaded(&url, &path).await {  // Add .await
-                    continue;
-                }
+            // Use the relative path from file info to construct target path
+            let target_path = self.base_path.join(&file.relative_path);
+            info!("Target path: {}", target_path.display());
 
-                let download_source = Source::Http(url.clone());
-                let mut processor = self.processor.lock().await;
-                if let Err(e) = processor.process_source(download_source).await {
-                    self.add_failed_download(url, path, checksum.clone()).await;  // Add .await
-                    return Err(e);
-                }
-                drop(processor);
-
-                if let Some((checksum_type, expected)) = &checksum {
-                    if !self.verification_manager.verify_checksum(&path, expected, checksum_type).await? {
-                        self.add_failed_download(url, path, Some((checksum_type.clone(), expected.clone()))).await;  // Add .await
-                        continue;
+            match file.file_type {
+                FileType::Xml => {
+                    info!("Processing XML: {}", file.relative_path);
+                    if let Source::Path(xml_path) = &file.source {
+                        let content = tokio::fs::read_to_string(xml_path).await?;
+                        let mut parser = DepotParser::new(&content);  // Changed to mut
+                        
+                        if let Ok(vibs) = parser.parse_vib_files() {
+                            for vib in vibs {
+                                let vib_source = Source::Http(format!("{}/{}", url, vib.relative_path));
+                                info!("Found VIB: {} ({})", vib.relative_path, vib.checksum);
+                                
+                                // Process each VIB file through the processor
+                                let vib_files = self.processor.process_source(vib_source).await?;
+                                for vib_file in vib_files {
+                                    let mut downloaded = self.downloaded.lock().await;
+                                    downloaded.insert(self.base_path.join(&vib_file.relative_path));
+                                }
+                            }
+                        }
                     }
                 }
-
-                self.mark_as_downloaded(&url, &path).await;  // Add .await
+                FileType::Zip => {
+                    info!("Processing ZIP: {}", file.relative_path);
+                    // ZIP files are already processed by processor.process_source
+                    let mut downloaded = self.downloaded.lock().await;
+                    downloaded.insert(target_path);
+                }
+                FileType::Vib => {
+                    info!("Processing VIB: {} -> {}", file.relative_path, target_path.display());
+                    if (!target_path.exists() || 
+                       (file.checksum.is_some() && !self.verifier.verify_checksum(
+                            &target_path,
+                            file.checksum.as_ref().unwrap(),
+                            file.checksum_type.as_ref().unwrap()
+                        ).await?)) 
+                    {
+                        if let Source::Http(url) = file.source {
+                            info!("Downloading VIB: {}", url);
+                            self.download_file(&url, &target_path).await?;
+                        }
+                    }
+                }
+                _ => debug!("Skipping unknown file type: {}", file.relative_path),
             }
         }
 
         Ok(())
     }
 
-    pub async fn get_failed_downloads(&self) -> Vec<String> {  // Make async
-        let failed = self.failed_downloads.lock().await;  // Change to async lock
-        failed.keys().cloned().collect()
+    async fn download_xml(&self, url: &str) -> Result<String> {
+        let response = self.client.get(url.parse()?).await?;
+        let bytes = http_body_util::BodyExt::collect(response.into_body())
+            .await?
+            .to_bytes();
+        let content = String::from_utf8(bytes.to_vec())?;
+        Ok(content)
     }
 
-    pub async fn get_file_type_stats(&self) -> HashMap<String, usize> {  // Make async
-        let types = self.file_types.lock().await;  // Change to async lock
-        types.clone()
+    async fn download_file(&self, url: &str, target_path: &Path) -> Result<()> {
+        // Create parent directories if they don't exist
+        if let Some(parent) = target_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        let response = self.client.get(url.parse()?).await?;
+        let bytes = http_body_util::BodyExt::collect(response.into_body())
+            .await?
+            .to_bytes();
+        tokio::fs::write(target_path, bytes).await?;
+        
+        // Track the downloaded file
+        let mut downloaded = self.downloaded.lock().await;
+        downloaded.insert(target_path.to_path_buf());
+        
+        info!("Downloaded: {}", target_path.display());
+        Ok(())
+    }
+
+    async fn add_failed_download(&self, url: String, path: PathBuf, checksum: Option<(String, String)>) {
+        let mut failed = self.failed.lock().await;
+        failed.insert(url, (path, checksum));
+    }
+
+    pub async fn retry_failed_downloads(&self) -> Result<()> {
+        let failed_downloads = {
+            let failed = self.failed.lock().await;
+            failed.clone()
+        };
+
+        for (url, (path, checksum)) in failed_downloads {
+            info!("Retrying download: {}", url);
+            if let Err(e) = self.download_file(&url, &path).await {
+                warn!("Retry failed for {}: {}", url, e);
+            } else {
+                let mut failed = self.failed.lock().await;
+                failed.remove(&url);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_file_type_stats(&self) -> HashMap<String, usize> {
+        let mut stats = HashMap::new();
+        let downloaded = self.downloaded.lock().await;
+        
+        for path in downloaded.iter() {
+            if let Some(ext) = path.extension() {
+                if let Some(ext_str) = ext.to_str() {
+                    *stats.entry(ext_str.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+        
+        stats
+    }
+
+    pub async fn get_failed_downloads(&self) -> Vec<String> {
+        let failed = self.failed.lock().await;
+        failed.keys().cloned().collect()
     }
 }

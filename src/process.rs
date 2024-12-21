@@ -1,8 +1,9 @@
+#![allow(unused)]
 use anyhow::Result;
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use crate::parser::{DepotParser, VibFile};
+use crate::parser::{DepotParser, XmlParser, Vendor}; // Add Vendor to imports
 use std::collections::{HashSet, HashMap};
 use hyper::{Request, StatusCode};
 use hyper_util::client::legacy::Client;
@@ -15,6 +16,8 @@ use zip::ZipArchive;
 use std::io::Read;
 use std::sync::Arc;
 use tokio::sync::Mutex;  // Change to tokio's Mutex
+use std::pin::Pin;
+use std::future::Future;
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub enum Source {
@@ -61,14 +64,20 @@ impl SourceProcessor for HttpProcessor {
                 .body(Empty::<Bytes>::new())?;
 
             let mut response = self.client.request(req).await?;
+            
+            if !response.status().is_success() {
+                return Err(anyhow::anyhow!("HTTP error: {}", response.status()));
+            }
+            
             let mut content = Vec::new();
-
             while let Some(frame) = response.frame().await {
                 let frame = frame?;
                 if let Some(data) = frame.data_ref() {
                     content.extend_from_slice(data);
                 }
             }
+
+            info!("Downloaded {} bytes from {}", content.len(), url);
             Ok(content)
         } else {
             error!("Invalid source type for HTTP processor: {:?}", source);
@@ -80,6 +89,8 @@ impl SourceProcessor for HttpProcessor {
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent).await?;
         }
+        
+        info!("Saving {} bytes to {}", content.len(), dest.display());
         fs::write(dest, content).await?;
         Ok(())
     }
@@ -130,52 +141,63 @@ impl ProcessManager {
     }
 
     pub async fn process_source(&self, source: Source) -> Result<Vec<FileInfo>> {
-        // Change to take &self instead of &mut self since we're using Arc<Mutex> now
         debug!("Processing source: {:?}", source);
-        self.process_source_inner(source).await
-    }
-
-    async fn process_source_inner(&self, source: Source) -> Result<Vec<FileInfo>> {
-        {
-            let mut processed = self.processed_sources.lock().await;
-            if processed.contains(&source) {
-                debug!("Source already processed, skipping: {:?}", source);
-                return Ok(Vec::new());
-            }
-            processed.insert(source.clone());
-        }
-
-        debug!("Starting processing of source: {:?}", source);
-
         let content = match &source {
             Source::Http(url) => {
-                debug!("Downloading HTTP content from: {}", url);
-                self.http_processor.read_content(&source).await?
+                info!("Downloading from {}", url);
+                let content = self.http_processor.read_content(&source).await?;
+                let target_path = self.base_path.join(
+                    url.split("VUM/PRODUCTION/").nth(1).unwrap_or(url)
+                );
+                self.http_processor.save_content(&content, &target_path).await?;
+                content
             }
             Source::Path(path) => {
-                debug!("Reading file content from: {}", path.display());
+                debug!("Reading from {}", path.display());
                 self.file_processor.read_content(&source).await?
             }
         };
-        debug!("Content size: {} bytes", content.len());
 
-        let file_type = self.get_file_type(&source);
-        debug!("Detected file type: {:?}", file_type);
+        // Continue with processing
+        self.process_source_inner(source, content).await
+    }
 
-        match file_type {
-            FileType::Xml => {
-                debug!("Processing as XML");
-                self.process_xml(&source, &content).await
+    async fn process_source_inner(&self, source: Source, content: Vec<u8>) -> Result<Vec<FileInfo>> {
+        self.process_source_inner_impl(source, content).await
+    }
+
+    fn process_source_inner_impl(&self, source: Source, content: Vec<u8>) -> Pin<Box<dyn Future<Output = Result<Vec<FileInfo>>> + Send + '_>> {
+        Box::pin(async move {
+            {
+                let mut processed = self.processed_sources.lock().await;
+                if processed.contains(&source) {
+                    debug!("Source already processed, skipping: {:?}", source);
+                    return Ok(Vec::new());
+                }
+                processed.insert(source.clone());
             }
-            FileType::Zip => {
-                debug!("Processing as ZIP");
-                self.process_zip(&source, &content).await
+
+            debug!("Starting processing of source: {:?}", source);
+            debug!("Content size: {} bytes", content.len());
+
+            let file_type = self.get_file_type(&source);
+            debug!("Detected file type: {:?}", file_type);
+
+            match file_type {
+                FileType::Xml => {
+                    debug!("Processing as XML");
+                    self.process_xml(&source, &content).await
+                }
+                FileType::Zip => {
+                    debug!("Processing as ZIP");
+                    self.process_zip(&source, &content).await
+                }
+                _ => {
+                    debug!("Processing as regular file");
+                    Ok(vec![self.create_file_info(&source, None, None)?])
+                }
             }
-            _ => {
-                debug!("Processing as regular file");
-                Ok(vec![self.create_file_info(&source, None, None)?])
-            }
-        }
+        })
     }
 
     fn get_file_type(&self, source: &Source) -> FileType {
@@ -194,7 +216,6 @@ impl ProcessManager {
     }
 
     async fn process_xml(&self, source: &Source, content: &[u8]) -> Result<Vec<FileInfo>> {
-        debug!("Processing XML content from {:?}", source);
         let mut files = Vec::new();
         let content_str = String::from_utf8_lossy(content);
         let mut parser = DepotParser::new(&content_str);
@@ -203,49 +224,67 @@ impl ProcessManager {
         if let Ok(vendors) = parser.parse_vendors() {
             debug!("Found {} vendors", vendors.len());
             for vendor in vendors {
-                debug!("Processing vendor: {} ({})", vendor.name, vendor.code);
-                let vendor_source = match source {
-                    Source::Http(url) => {
-                        let base = url.rsplit_once('/').map(|(dir, _)| dir).unwrap_or(url);
-                        Source::Http(format!("{}/{}/{}", base, vendor.relative_path, vendor.index_file))
-                    }
-                    Source::Path(path) => {
-                        Source::Path(path.parent().unwrap_or(path).join(&vendor.relative_path).join(&vendor.index_file))
-                    }
-                };
-                // Box the recursive call
-                files.extend(Box::pin(self.process_source_inner(vendor_source)).await?);
-            }
-        }
-
-        // Process packages
-        if let Ok(packages) = parser.parse_packages() {
-            debug!("Found {} packages", packages.len());
-            for package in packages {
-                debug!("Processing package: {} v{}", package.product_id, package.version);
-                let package_source = self.create_relative_source(source, &package.url)?;
-                // Box the recursive call
-                files.extend(Box::pin(self.process_source_inner(package_source)).await?);
-            }
-        }
-
-        // Process VIB files
-        if let Ok(vibs) = parser.parse_vib_files() {
-            debug!("Found {} VIB files", vibs.len());
-            for vib in vibs {
-                debug!("Processing VIB: {}", vib.relative_path);
+                debug!("Processing vendor: {}", vendor.code);
+                let vendor_path = format!("{}/{}/{}", 
+                    vendor.relative_path, 
+                    vendor.code,
+                    vendor.indexfile  // Changed from index_file to indexfile
+                );
+                let vendor_source = self.create_relative_source(source, &vendor_path)?;
                 files.push(FileInfo {
-                    source: self.create_relative_source(source, &vib.relative_path)?,
-                    relative_path: vib.relative_path,
-                    checksum: Some(vib.checksum),
-                    checksum_type: Some(vib.checksum_type),
-                    file_type: FileType::Vib,
+                    source: vendor_source,
+                    relative_path: vendor_path,
+                    checksum: None,
+                    checksum_type: None,
+                    file_type: FileType::Xml,
                     size: None,
                 });
             }
         }
 
-        debug!("XML processing complete, found {} total files", files.len());
+        // Reset parser and process packages
+        parser = DepotParser::new(&content_str);
+        if let Ok(packages) = parser.parse_packages() {
+            debug!("Found {} packages", packages.len());
+            for package in packages {
+                if !package.url.is_empty() {
+                    let url = package.url.clone(); // Clone before moving
+                    let package_source = self.create_relative_source(source, &url)?;
+                    files.push(FileInfo {
+                        source: package_source,
+                        relative_path: url.clone(),
+                        checksum: None,
+                        checksum_type: None,
+                        file_type: if url.ends_with(".zip") { 
+                            FileType::Zip 
+                        } else { 
+                            FileType::Other(url) 
+                        },
+                        size: None,
+                    });
+                }
+            }
+        }
+
+        // Reset parser and process VIB files
+        parser = DepotParser::new(&content_str);
+        if let Ok(vibs) = parser.parse_vib_files() {
+            debug!("Found {} VIB files", vibs.len());
+            for vib in vibs {
+                if !vib.relative_path.is_empty() {
+                    files.push(FileInfo {
+                        source: self.create_relative_source(source, &vib.relative_path)?,
+                        relative_path: vib.relative_path,
+                        checksum: Some(vib.checksum),
+                        checksum_type: Some(vib.checksum_type),
+                        file_type: FileType::Vib,
+                        size: None,
+                    });
+                }
+            }
+        }
+
+        debug!("Found {} total files in XML", files.len());
         Ok(files)
     }
 
@@ -290,11 +329,15 @@ impl ProcessManager {
     }
 
     fn create_relative_source(&self, base_source: &Source, relative_path: &str) -> Result<Source> {
-        debug!("Creating relative source from {:?} with path {}", base_source, relative_path);
         Ok(match base_source {
             Source::Http(url) => {
                 let base = url.rsplit_once('/').map(|(dir, _)| dir).unwrap_or(url);
-                Source::Http(format!("{}/{}", base, relative_path))
+                // Handle both absolute and relative URLs
+                if relative_path.starts_with("http") {
+                    Source::Http(relative_path.to_string())
+                } else {
+                    Source::Http(format!("{}/{}", base, relative_path))
+                }
             }
             Source::Path(path) => {
                 Source::Path(path.parent().unwrap_or(path).join(relative_path))
@@ -305,13 +348,28 @@ impl ProcessManager {
     fn create_file_info(&self, source: &Source, checksum: Option<String>, checksum_type: Option<String>) -> Result<FileInfo> {
         debug!("Creating file info for {:?}", source);
         let relative_path = match source {
-            Source::Http(url) => url.split("VUM/PRODUCTION/").nth(1).unwrap_or(url).to_string(),
-            Source::Path(path) => path.strip_prefix(&self.base_path)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .to_string(),
+            Source::Http(url) => {
+                // Extract everything after VUM/PRODUCTION/ as the relative path
+                url.split("VUM/PRODUCTION/")
+                   .nth(1)
+                   .unwrap_or_else(|| {
+                       // If VUM/PRODUCTION/ not found, try to get filename from URL
+                       url.rsplit('/')
+                          .next()
+                          .unwrap_or(url)
+                   })
+                   .to_string()
+            }
+            Source::Path(path) => {
+                path.strip_prefix(&self.base_path)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .to_string()
+            }
         };
 
+        debug!("Extracted relative path: {}", relative_path);
+        
         Ok(FileInfo {
             source: source.clone(),
             relative_path,
@@ -320,5 +378,10 @@ impl ProcessManager {
             file_type: self.get_file_type(source),
             size: None,
         })
+    }
+
+    pub async fn process_vendor(&self, vendor: &Vendor) -> Result<Vec<String>> {
+        // Use the correct field name 'indexfile' instead of 'index_file'
+        Ok(vec![format!("{}/{}", vendor.relative_path, vendor.indexfile)])
     }
 }

@@ -1,3 +1,4 @@
+#![allow(unused)]
 use anyhow::Result;
 use log::{info, warn, error, debug};
 use sha2::{Sha256, Digest};
@@ -74,7 +75,7 @@ pub struct AsyncReport {
 }
 
 impl AsyncReport {
-    fn new() -> Self {
+    pub fn new() -> Self {  // Change from private to public
         Self {
             inner: TokioMutex::new(VerificationReport::default()),
         }
@@ -122,17 +123,21 @@ pub struct VerificationManager {
 
 impl VerificationManager {
     pub fn new() -> Self {
+        Self::new_with_concurrency(MAX_CONCURRENT_VERIFICATIONS)
+    }
+
+    pub fn new_with_concurrency(concurrent_verifications: usize) -> Self {
         let thread_pool = ThreadPoolBuilder::new()
-            .num_threads(MAX_CONCURRENT_VERIFICATIONS)
+            .num_threads(concurrent_verifications)
             .build()
             .unwrap();
 
         Self {
             thread_pool: Arc::new(thread_pool),
-            semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_VERIFICATIONS)),
+            semaphore: Arc::new(Semaphore::new(concurrent_verifications)),
         }
     }
-
+    
     pub async fn verify_checksum(&self, path: &Path, expected: &str, checksum_type: &str) -> Result<bool> {
         if checksum_type.to_lowercase() != "sha-256" {
             warn!("Unsupported checksum type '{}' for {}", checksum_type, path.display());
@@ -180,19 +185,39 @@ impl VerificationManager {
     }
 }
 
-pub async fn verify_directory(base_path: &Path) -> Result<VerificationReport> {
+// Update function signature to accept Path
+pub async fn verify_directory(source: &Path) -> Result<VerificationReport> {
     let report = AsyncReport::new();
-    let verification_manager = VerificationManager::new();
+    let verifier = VerificationManager::new_with_concurrency(MAX_CONCURRENT_VERIFICATIONS);
+
+    // Check if source is a path or URL
+    if let Some(s) = source.to_str() {
+        if s.starts_with("http://") || s.starts_with("https://") {
+            // Handle URL verification
+            let client = Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build::<_, Empty<Bytes>>(HttpsConnector::new());
+            let base_path = PathBuf::from("temp"); // Temporary directory for downloads
+            let processor = ProcessManager::new(client.clone(), base_path);
+            processor.process_source(Source::Http(s.to_string())).await?;
+        }
+    }
     
+    // Handle directory verification
+    verify_directory_internal(source, &verifier, &report).await?;
+
+    Ok(report.into_inner().await)
+}
+
+async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, report: &AsyncReport) -> Result<()> {
     let https = HttpsConnector::new();
     let client = Client::builder(hyper_util::rt::TokioExecutor::new())
         .build::<_, Empty<Bytes>>(https);
     
-    let mut processor = ProcessManager::new(client, base_path.to_path_buf());
+    let processor = ProcessManager::new(client, path.to_path_buf());
     
     // Find all XML and ZIP files in the directory first
     let mut found_files = Vec::new();
-    let mut stack = vec![base_path.to_path_buf()];
+    let mut stack = vec![path.to_path_buf()];
     
     while let Some(dir) = stack.pop() {
         let mut entries = fs::read_dir(&dir).await?;
@@ -239,7 +264,7 @@ pub async fn verify_directory(base_path: &Path) -> Result<VerificationReport> {
                         FileType::Vib => {
                             report.increment_checked().await;
                             // Move ownership of file into the task
-                            tasks.push(verify_vib_file(&verification_manager, file, base_path, &report));
+                            tasks.push(verify_vib_file(&verifier, file, path, &report));
                         }
                         _ => {}
                     }
@@ -263,7 +288,7 @@ pub async fn verify_directory(base_path: &Path) -> Result<VerificationReport> {
         if record.get(1) == Some("Yes") && record.get(2) == Some("Connected") {
             if let Some(url) = record.get(0) {
                 let relative_path = url.split("VUM/PRODUCTION/").nth(1).unwrap_or(url);
-                let xml_path = base_path.join(relative_path);
+                let xml_path = path.join(relative_path);
 
                 // Try both HTTP and local path
                 let source = if xml_path.exists() {
@@ -291,7 +316,7 @@ pub async fn verify_directory(base_path: &Path) -> Result<VerificationReport> {
                                 FileType::Vib => {
                                     report.increment_checked().await;  // Use async method
                                     // Move ownership of file into the task
-                                    tasks.push(verify_vib_file(&verification_manager, file, base_path, &report));
+                                    tasks.push(verify_vib_file(&verifier, file, path, &report));
                                 }
                                 _ => {}
                             }
@@ -306,10 +331,10 @@ pub async fn verify_directory(base_path: &Path) -> Result<VerificationReport> {
         }
     }
 
-    Ok(report.into_inner().await)
+    Ok(())
 }
 
-async fn verify_vib_file(
+pub async fn verify_vib_file(
     manager: &VerificationManager,
     file_info: crate::process::FileInfo,  // Take ownership instead of borrowing
     base_path: &Path,
