@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, Context};
 use std::path::{Path, PathBuf};
 use tokio::fs::File;
 use tokio::io::{AsyncWriteExt, AsyncReadExt, BufReader};
@@ -14,10 +14,12 @@ use std::collections::{HashSet, HashMap};
 use std::sync::Mutex;
 use sha2::{Sha256, Digest};
 use std::time::Duration;
-use hyper::{Client, Body, Request, StatusCode};
+use hyper::{Request, StatusCode};
 use hyper_tls::HttpsConnector;
-use hyper::client::HttpConnector;
-use hyper::body::HttpBody as _;
+use hyper_util::client::legacy::{connect::HttpConnector, Client};
+use hyper::body::Bytes;
+use http_body_util::{BodyExt, Empty, Full};
+use bytes::Buf;
 use rayon::ThreadPoolBuilder;
 use std::io::Read;
 use tokio_retry::{Retry, strategy::FixedInterval};
@@ -34,7 +36,7 @@ const MAX_RETRIES: u32 = 5;
 #[derive(Clone)]
 pub struct DownloadService {
     download_path: PathBuf,
-    client: Client<HttpsConnector<HttpConnector>>,
+    client: Client<HttpsConnector<HttpConnector>, Empty<Bytes>>,
     semaphore: Arc<Semaphore>,
     downloaded: DownloadTracker,
     failed_downloads: Arc<Mutex<HashMap<String, (PathBuf, Option<(String, String)>)>>>,
@@ -44,7 +46,7 @@ pub struct DownloadService {
 }
 
 impl DownloadService {
-    pub fn new(download_path: PathBuf, client: Client<HttpsConnector<HttpConnector>>) -> Self {
+    pub fn new(download_path: PathBuf, client: Client<HttpsConnector<HttpConnector>, Empty<Bytes>>) -> Self {
         let compute_pool = ThreadPoolBuilder::new()
             .num_threads(num_cpus::get())
             .stack_size(2 * 1024 * 1024)
@@ -175,15 +177,16 @@ impl DownloadService {
         
         let req = Request::builder()
             .uri(&zip_url)
-            .body(Body::empty())
-            .expect("Failed to build request");
+            .body(Empty::<Bytes>::new())?;
 
         let mut response = self.client.request(req).await?;
         let mut zip_data = Vec::new();
 
-        while let Some(chunk) = response.body_mut().data().await {
-            let chunk = chunk?;
-            zip_data.extend_from_slice(&chunk);
+        while let Some(chunk) = response.frame().await {
+            let frame = chunk?;
+            if let Some(data) = frame.data_ref() {
+                zip_data.extend_from_slice(data);
+            }
         }
 
         let vib_files = task::spawn_blocking(move || -> Result<Vec<VibFile>> {
@@ -245,15 +248,16 @@ impl DownloadService {
         
         let req = Request::builder()
             .uri(&url)
-            .body(Body::empty())
-            .expect("Failed to build request");
+            .body(Empty::<Bytes>::new())?;
 
         let mut response = self.client.request(req).await?;
         let mut content = Vec::new();
 
-        while let Some(chunk) = response.body_mut().data().await {
-            let chunk = chunk?;
-            content.extend_from_slice(&chunk);
+        while let Some(chunk) = response.frame().await {
+            let frame = chunk?;
+            if let Some(data) = frame.data_ref() {
+                content.extend_from_slice(data);
+            }
         }
 
         let content = String::from_utf8(content)?;
@@ -405,7 +409,7 @@ impl DownloadService {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        if !full_path.starts_with(&self.download_path) {
+        if (!full_path.starts_with(&self.download_path)) {
             return Err(anyhow::anyhow!("Invalid path"));
         }
 
@@ -467,14 +471,10 @@ impl DownloadService {
     }
 
     fn should_retry(error: &anyhow::Error) -> bool {
-        if let Some(hyper_error) = error.downcast_ref::<hyper::Error>() {
-            // Check if it's a connection error or timeout
-            hyper_error.is_connect() || hyper_error.is_timeout()
-        } else if error.to_string().contains("status: 429") {
-            // Check for rate limiting (TOO_MANY_REQUESTS)
-            true
-        } else if error.to_string().contains("status: 5") {
-            // Check for server errors (5xx)
+        if error.to_string().contains("connection") ||
+           error.to_string().contains("timeout") ||
+           error.to_string().contains("status: 429") ||
+           error.to_string().contains("status: 5") {
             true
         } else {
             false
@@ -488,14 +488,17 @@ impl DownloadService {
         Retry::spawn(retry_strategy, || async {
             let req = Request::builder()
                 .uri(url)
-                .body(Body::empty())
-                .expect("Failed to build request");
+                .body(Empty::<Bytes>::new())?;
 
             let mut response = self.client.request(req).await?;
-
             let status = response.status();
             let headers = response.headers().clone();
-            let content_length = response.body().size_hint().upper();
+
+            // Get content length from headers
+            let content_length = headers
+                .get(hyper::header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok());
 
             info!("Response info for {}:", url);
             info!("Status: {}", status);
@@ -511,8 +514,8 @@ impl DownloadService {
                     warn!("File not found (404): {}", url);
                     return Err(anyhow::anyhow!("HTTP 404: File not found"));
                 }
-                let text = hyper::body::to_bytes(response.body_mut()).await.unwrap_or_default();
-                warn!("Server returned error status: {} with body: {:?}", status, text);
+                let body = response.collect().await?.to_bytes();
+                warn!("Server returned error status: {} with body: {:?}", status, body);
                 return Err(anyhow::anyhow!("HTTP error: {}", status));
             }
 
@@ -522,10 +525,12 @@ impl DownloadService {
             let mut file = File::create(full_path).await?;
             let mut downloaded = 0;
 
-            while let Some(chunk) = response.body_mut().data().await {
-                let chunk = chunk?;
-                file.write_all(&chunk).await?;
-                downloaded += chunk.len() as u64;
+            while let Some(frame) = response.frame().await {
+                let frame = frame?;
+                if let Some(data) = frame.data_ref() {
+                    file.write_all(data).await?;
+                    downloaded += data.len() as u64;
+                }
             }
 
             if downloaded != total_size {

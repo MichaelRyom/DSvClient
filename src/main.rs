@@ -3,8 +3,10 @@ use std::path::PathBuf;
 use log::{LevelFilter, warn, info, error};
 use simplelog::{WriteLogger, CombinedLogger, TermLogger, Config, TerminalMode, ColorChoice};
 use std::fs::File;
-use hyper::Client;
+use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use hyper_tls::HttpsConnector;
+use http_body_util::Empty;
+use bytes::Bytes;
 
 mod downloader;
 mod parser;
@@ -47,7 +49,8 @@ async fn main() -> Result<()> {
     ])?;
 
     let https = HttpsConnector::new();
-    let client = Client::builder().build::<_, hyper::Body>(https);
+    let client = Client::builder(hyper_util::rt::TokioExecutor::new())
+        .build::<_, Empty<Bytes>>(https);
     let service = downloader::DownloadService::new(download_path.clone(), client);
     
     if verify {
