@@ -1,16 +1,28 @@
-use anyhow::{Result, Context};
-use log::{info, warn, error};
+use anyhow::Result;
+use log::{info, warn, error, debug};
 use sha2::{Sha256, Digest};
 use std::path::{Path, PathBuf};
-use std::io::Read;
 use std::collections::HashSet;
 use tokio::fs;
-use crate::parser::{DepotParser, VibFile};
-use std::pin::Pin;
-use std::future::Future;
-use tokio::io::{AsyncReadExt, BufReader as TokioBufReader};
+use tokio::io::{AsyncReadExt, BufReader};
+use crate::process::{ProcessManager, Source, FileType};
+use hyper_util::client::legacy::Client;
+use hyper_tls::HttpsConnector;
+use http_body_util::Empty;
+use bytes::Bytes;
+use tokio::sync::Semaphore;
 use std::sync::Arc;
-use zip::ZipArchive;
+use rayon::ThreadPoolBuilder;
+use tokio::task;
+use std::time::Duration;
+use tokio::time::sleep;
+use std::sync::Mutex;
+use tokio::sync::Mutex as TokioMutex;
+
+// Add new constants for controlling CPU usage
+const MAX_CONCURRENT_VERIFICATIONS: usize = 100; // Adjust based on CPU cores
+const VERIFICATION_CHUNK_SIZE: usize = 1024 * 1024; // 1MB chunks
+const THREAD_SLEEP_MS: u64 = 10; // Sleep time between chunks
 
 #[derive(Debug, Default)]
 pub struct VerificationReport {
@@ -57,177 +69,288 @@ impl VerificationReport {
     }
 }
 
+pub struct AsyncReport {
+    inner: TokioMutex<VerificationReport>,
+}
+
+impl AsyncReport {
+    fn new() -> Self {
+        Self {
+            inner: TokioMutex::new(VerificationReport::default()),
+        }
+    }
+
+    async fn add_xml(&self, path: PathBuf) {
+        let mut report = self.inner.lock().await;
+        report.processed_xmls.insert(path);
+    }
+
+    async fn add_zip(&self, path: PathBuf) {
+        let mut report = self.inner.lock().await;
+        report.processed_zips.insert(path);
+    }
+
+    async fn increment_checked(&self) {
+        let mut report = self.inner.lock().await;
+        report.files_checked += 1;
+    }
+
+    async fn add_missing(&self, path: PathBuf) {
+        let mut report = self.inner.lock().await;
+        report.vib_files_missing.push(path);
+    }
+
+    async fn add_mismatch(&self, path: PathBuf, checksum: String) {
+        let mut report = self.inner.lock().await;
+        report.checksum_mismatches.push((path, checksum));
+    }
+
+    async fn add_error(&self, path: PathBuf, error: String) {
+        let mut report = self.inner.lock().await;
+        report.add_error(path, error);
+    }
+
+    async fn into_inner(self) -> VerificationReport {
+        self.inner.into_inner()
+    }
+}
+
+pub struct VerificationManager {
+    thread_pool: Arc<rayon::ThreadPool>,
+    semaphore: Arc<Semaphore>,
+}
+
+impl VerificationManager {
+    pub fn new() -> Self {
+        let thread_pool = ThreadPoolBuilder::new()
+            .num_threads(MAX_CONCURRENT_VERIFICATIONS)
+            .build()
+            .unwrap();
+
+        Self {
+            thread_pool: Arc::new(thread_pool),
+            semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_VERIFICATIONS)),
+        }
+    }
+
+    pub async fn verify_checksum(&self, path: &Path, expected: &str, checksum_type: &str) -> Result<bool> {
+        if checksum_type.to_lowercase() != "sha-256" {
+            warn!("Unsupported checksum type '{}' for {}", checksum_type, path.display());
+            return Ok(false);
+        }
+
+        info!("Verifying checksum for: {}", path.display());
+        info!("Expected SHA-256: {}", expected);
+
+        let _permit = self.semaphore.acquire().await?;
+        let path_for_closure = path.to_path_buf();  // Create a clone for the closure
+        let path_for_info = path.to_path_buf();     // Create another clone for the info message
+        let expected = expected.to_string();
+
+        let result = task::spawn_blocking(move || -> Result<bool> {
+            use std::io::Read;
+            let file = std::fs::File::open(&path_for_closure)?;
+            let mut reader = std::io::BufReader::new(file);
+            let mut hasher = Sha256::new();
+            let mut buffer = vec![0; VERIFICATION_CHUNK_SIZE];
+            
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        hasher.update(&buffer[..n]);
+                        std::thread::sleep(Duration::from_millis(THREAD_SLEEP_MS));
+                    }
+                    Err(e) => return Err(anyhow::anyhow!("Read error: {}", e)),
+                }
+            }
+
+            let calculated = format!("{:x}", hasher.finalize());
+            Ok(calculated == expected.to_lowercase())
+        }).await??;
+
+        match result {
+            true => info!("Checksum verified successfully for {} ({} bytes)", 
+                path_for_info.display(), 
+                path_for_info.metadata()?.len()),
+            false => warn!("Checksum mismatch for {}", path_for_info.display()),
+        }
+
+        Ok(result)
+    }
+}
+
 pub async fn verify_directory(base_path: &Path) -> Result<VerificationReport> {
-    let mut report = VerificationReport::default();
+    let report = AsyncReport::new();
+    let verification_manager = VerificationManager::new();
     
-    // Read the sources file
+    let https = HttpsConnector::new();
+    let client = Client::builder(hyper_util::rt::TokioExecutor::new())
+        .build::<_, Empty<Bytes>>(https);
+    
+    let mut processor = ProcessManager::new(client, base_path.to_path_buf());
+    
+    // Find all XML and ZIP files in the directory first
+    let mut found_files = Vec::new();
+    let mut stack = vec![base_path.to_path_buf()];
+    
+    while let Some(dir) = stack.pop() {
+        let mut entries = fs::read_dir(&dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.is_file() {
+                match path.extension().and_then(|e| e.to_str()) {
+                    Some("xml") => {
+                        info!("Found XML file: {}", path.display());
+                        found_files.push(Source::Path(path));
+                    }
+                    Some("zip") => {
+                        info!("Found ZIP file: {}", path.display());
+                        found_files.push(Source::Path(path));
+                    }
+                    _ => {}
+                }
+            } else if path.is_dir() {
+                stack.push(path);
+            }
+        }
+    }
+
+    info!("Found {} files to process", found_files.len());
+    
+    // Process each file
+    for source in found_files {
+        let source_clone = source.clone();  // Clone the source
+        match processor.process_source(source_clone).await {
+            Ok(files) => {
+                let mut tasks = Vec::new();
+                for file in files.into_iter() {  // Use into_iter() to move ownership
+                    match file.file_type {
+                        FileType::Xml => {
+                            if let Source::Path(path) = file.source {
+                                report.add_xml(path).await;
+                            }
+                        }
+                        FileType::Zip => {
+                            if let Source::Path(path) = file.source {
+                                report.add_zip(path).await;
+                            }
+                        }
+                        FileType::Vib => {
+                            report.increment_checked().await;
+                            // Move ownership of file into the task
+                            tasks.push(verify_vib_file(&verification_manager, file, base_path, &report));
+                        }
+                        _ => {}
+                    }
+                }
+                futures::future::join_all(tasks).await;
+            }
+            Err(e) => {
+                if let Source::Path(path) = source {  // Original source is still available here
+                    report.add_error(path, e.to_string()).await;
+                }
+            }
+        }
+    }
+
+    // Process sources from sources file
     let sources = include_str!("../sources");
     let mut rdr = csv::Reader::from_reader(sources.as_bytes());
     
-    // Process each enabled source
     for result in rdr.records() {
         let record = result?;
         if record.get(1) == Some("Yes") && record.get(2) == Some("Connected") {
             if let Some(url) = record.get(0) {
                 let relative_path = url.split("VUM/PRODUCTION/").nth(1).unwrap_or(url);
                 let xml_path = base_path.join(relative_path);
-                if xml_path.exists() {
-                    process_xml_file(&xml_path, base_path, &mut report).await?;
+
+                // Try both HTTP and local path
+                let source = if xml_path.exists() {
+                    report.add_xml(xml_path.clone()).await;  // Use async method
+                    Source::Path(xml_path)
                 } else {
-                    warn!("Source XML file not found: {}", xml_path.display());
+                    Source::Http(url.to_string())
+                };
+
+                match processor.process_source(source).await {
+                    Ok(files) => {
+                        let mut tasks = Vec::new();
+                        for file in files {
+                            match file.file_type {
+                                FileType::Xml => {
+                                    if let Source::Path(path) = &file.source {
+                                        report.add_xml(path.to_path_buf()).await;  // Use async method
+                                    }
+                                }
+                                FileType::Zip => {
+                                    if let Source::Path(path) = &file.source {
+                                        report.add_zip(path.to_path_buf()).await;  // Use async method
+                                    }
+                                }
+                                FileType::Vib => {
+                                    report.increment_checked().await;  // Use async method
+                                    // Move ownership of file into the task
+                                    tasks.push(verify_vib_file(&verification_manager, file, base_path, &report));
+                                }
+                                _ => {}
+                            }
+                        }
+                        futures::future::join_all(tasks).await;
+                    }
+                    Err(e) => {
+                        report.add_error(PathBuf::from(url), e.to_string()).await;  // Use async method
+                    }
                 }
             }
         }
     }
 
-    Ok(report)
+    Ok(report.into_inner().await)
 }
 
-fn process_xml_file<'a>(
-    xml_path: &'a Path,
-    base_path: &'a Path,
-    report: &'a mut VerificationReport,
-) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
-    Box::pin(async move {
-        if report.processed_xmls.contains(xml_path) {
-            return Ok(());
+async fn verify_vib_file(
+    manager: &VerificationManager,
+    file_info: crate::process::FileInfo,  // Take ownership instead of borrowing
+    base_path: &Path,
+    report: &AsyncReport
+) -> Result<()> {
+    let vib_path = match &file_info.source {
+        Source::Path(p) => p.clone(),
+        Source::Http(url) => {
+            let relative = url.split("VUM/PRODUCTION/").nth(1).unwrap_or(url);
+            base_path.join(relative)
         }
-        
-        info!("Processing XML file: {}", xml_path.display());
-        report.processed_xmls.insert(xml_path.to_path_buf());
-        
-        let content = fs::read_to_string(xml_path).await?;
-        let mut parser = DepotParser::new(&content);
-        
-        // Process depot index
-        if xml_path.to_string_lossy().contains("vmw-depot-index.xml") {
-            if let Ok(vendors) = parser.parse_vendors() {
-                for vendor in vendors {
-                    let vendor_path = base_path
-                        .join(&vendor.relative_path)
-                        .join(&vendor.index_file);
-                    if vendor_path.exists() {
-                        process_xml_file(&vendor_path, base_path, report).await?;
-                    } else {
-                        warn!("Vendor XML not found: {}", vendor_path.display());
-                    }
-                }
-            }
-        }
+    };
 
-        // Process packages and their metadata
-        if let Ok(packages) = parser.parse_packages() {
-            for package in packages {
-                let package_path = base_path.join(&package.url);
-                if package_path.exists() {
-                    if package_path.extension().and_then(|e| e.to_str()) == Some("zip") {
-                        process_zip_file(&package_path, base_path, report).await?;
-                    }
-                } else {
-                    warn!("Package file not found: {}", package_path.display());
-                }
-            }
-        }
-
-        // Process addon metadata
-        if let Ok(addon_metadata) = parser.parse_addon_metadata() {
-            for metadata in addon_metadata {
-                let metadata_path = base_path.join(&metadata.url);
-                if metadata_path.exists() {
-                    if metadata_path.extension().and_then(|e| e.to_str()) == Some("zip") {
-                        process_zip_file(&metadata_path, base_path, report).await?;
-                    }
-                } else {
-                    warn!("Addon metadata file not found: {}", metadata_path.display());
-                }
-            }
-        }
-
-        // Process VIB files directly in this XML
-        if let Ok(vibs) = parser.parse_vib_files() {
-            process_vib_files(vibs, base_path, report).await?;
-        }
-
-        Ok(())
-    })
-}
-
-async fn process_zip_file(zip_path: &Path, base_path: &Path, report: &mut VerificationReport) -> Result<()> {
-    if report.processed_zips.contains(zip_path) {
+    if !vib_path.exists() {
+        warn!("Missing VIB file: {}", vib_path.display());
+        report.add_missing(vib_path).await;
         return Ok(());
     }
 
-    info!("Processing ZIP file: {}", zip_path.display());
-    report.processed_zips.insert(zip_path.to_path_buf());
+    if let (Some(checksum), Some(checksum_type)) = (&file_info.checksum, &file_info.checksum_type) {
+        let file_size = vib_path.metadata()?.len();
+        info!("Verifying VIB file: {} ({} bytes)", vib_path.display(), file_size);
+        info!("Expected {} checksum: {}", checksum_type, checksum);
 
-    let zip_data = fs::read(zip_path).await?;
-    
-    let vib_files = tokio::task::spawn_blocking(move || -> Result<Vec<VibFile>> {
-        let reader = std::io::Cursor::new(zip_data);
-        let mut archive = ZipArchive::new(reader)?;
-        let mut vib_files = Vec::new();
-
-        for i in 0..archive.len() {
-            if let Ok(mut file) = archive.by_index(i) {
-                if file.name().ends_with("vmware.xml") {
-                    let mut contents = String::new();
-                    file.read_to_string(&mut contents)?;
-                    let mut parser = DepotParser::new(&contents);
-                    if let Ok(files) = parser.parse_vib_files() {
-                        vib_files.extend(files);
-                    }
-                }
-            }
-        }
-        Ok(vib_files)
-    }).await??;
-
-    process_vib_files(vib_files, base_path, report).await?;
-    Ok(())
-}
-
-async fn process_vib_files(vibs: Vec<VibFile>, base_path: &Path, report: &mut VerificationReport) -> Result<()> {
-    for vib in vibs {
-        let vib_path = base_path.join(&vib.relative_path);
-        report.files_checked += 1;
-        
-        if !vib_path.exists() {
-            report.vib_files_missing.push(vib_path);
-            continue;
-        }
-
-        match verify_checksum(&vib_path, &vib.checksum, &vib.checksum_type).await {
+        match manager.verify_checksum(&vib_path, checksum, checksum_type).await {
             Ok(true) => {
-                info!("Verified: {}", vib_path.display());
-            },
+                info!("✓ Verified: {}", vib_path.display());
+            }
             Ok(false) => {
-                warn!("Checksum mismatch: {}", vib_path.display());
-                report.checksum_mismatches.push((vib_path, vib.checksum));
-            },
+                warn!("✗ Checksum mismatch: {}", vib_path.display());
+                warn!("  Expected: {}", checksum);
+                report.add_mismatch(vib_path, checksum.clone()).await;
+            }
             Err(e) => {
-                error!("Failed to verify {}: {}", vib_path.display(), e);
-                report.add_error(vib_path, format!("Verification failed: {}", e));
+                error!("! Verification error for {}: {}", vib_path.display(), e);
+                report.add_error(vib_path, format!("Verification failed: {}", e)).await;
             }
         }
+    } else {
+        warn!("No checksum information available for: {}", vib_path.display());
     }
+
     Ok(())
-}
-
-async fn verify_checksum(path: &Path, expected: &str, checksum_type: &str) -> Result<bool> {
-    if checksum_type.to_lowercase() != "sha-256" {
-        return Ok(false);
-    }
-
-    let file = tokio::fs::File::open(path).await?;
-    let mut reader = TokioBufReader::new(file);
-    let mut buffer = vec![0; 64 * 1024];
-    let mut hasher = Sha256::new();
-
-    loop {
-        let n = reader.read(&mut buffer).await?;
-        if n == 0 { break; }
-        hasher.update(&buffer[..n]);
-    }
-    
-    Ok(format!("{:x}", hasher.finalize()) == expected.to_lowercase())
 }

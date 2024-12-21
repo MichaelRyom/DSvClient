@@ -11,6 +11,7 @@ use bytes::Bytes;
 mod downloader;
 mod parser;
 mod verify;
+mod process;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -82,17 +83,17 @@ async fn main() -> Result<()> {
         }
         
         // Get and display file type statistics
-        let stats = service.get_file_type_stats();
+        let stats = service.get_file_type_stats().await;  // Add .await
         info!("\nFile format summary:");
-        for (ext, count) in stats {
+        for (ext, count) in stats.into_iter() {  // Use into_iter() on the HashMap
             info!("  {}: {} files", ext, count);
         }
         
         // Summarize files not downloaded
-        let failed_downloads = service.get_failed_downloads();
+        let failed_downloads = service.get_failed_downloads().await;  // Add .await
         if !failed_downloads.is_empty() {
             warn!("\nSummary of files not downloaded:");
-            for url in failed_downloads {
+            for url in failed_downloads.into_iter() {  // Use into_iter() on the Vec
                 warn!("  {}", url);
             }
         } else {
