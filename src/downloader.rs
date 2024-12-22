@@ -11,9 +11,13 @@ use http_body_util::Empty;
 use bytes::Bytes;
 use crate::process::{ProcessManager, Source, FileType};
 use crate::verify::{self, VerificationManager};
-use crate::parser::{XmlParser, VmwarePackage, DepotParser, AddonPackage, AddonMetadata};  // Add VmwarePackage, AddonPackage, and AddonMetadata to imports
+use crate::parser::{XmlParser, VmwarePackage, DepotParser, AddonPackage, AddonMetadata, Vendor};  // Add VmwarePackage, AddonPackage, and AddonMetadata to imports
 use std::pin::Pin;
 use std::future::Future;
+use futures::future::join_all;
+use rayon::prelude::*;
+
+const MAX_CONCURRENT_DOWNLOADS: usize = 10;
 
 type DownloadTracker = Arc<Mutex<HashSet<PathBuf>>>;
 
@@ -26,6 +30,7 @@ pub struct Downloader {
     processor: Arc<ProcessManager>,
     verifier: Arc<VerificationManager>,
     xml_parser: Arc<XmlParser>,
+    download_semaphore: Arc<Semaphore>,
 }
 
 #[derive(Debug)]
@@ -45,6 +50,7 @@ impl Downloader {
             processor: Arc::new(ProcessManager::new(client.clone(), base_path.clone())),
             verifier: Arc::new(VerificationManager::new_with_concurrency(100)),
             xml_parser: Arc::new(XmlParser::new()),
+            download_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_DOWNLOADS)),
         }
     }
 
@@ -78,55 +84,50 @@ impl Downloader {
         let index_content = self.download_xml(url).await?;
         let vendors = self.xml_parser.parse_vendor_list(&index_content)?;
         
-        // Process each vendor
+        // Process vendors concurrently
+        let mut vendor_tasks = Vec::new();
         for vendor in vendors {
-            // Construct vendor URL using base URL
-            let vendor_url = format!("{}/{}/{}", 
-                base_url,
-                vendor.relative_path, 
-                vendor.indexfile
-            );
-            info!("Processing vendor {} at {}", vendor.name, vendor_url);
-            
-            // Download and parse vendor index
-            match self.download_xml(&vendor_url).await {
-                Ok(vendor_content) => {
-                    if let Ok(metadata_list) = self.xml_parser.parse_metadata_list(&vendor_content) {
-                        for metadata in metadata_list {
-                            let metadata_url = format!("{}/{}/{}", 
-                                base_url,
-                                vendor.relative_path, 
-                                metadata.url
-                            );
-                            if let Err(e) = self.process_metadata(&metadata_url).await {
-                                warn!("Error processing metadata {}: {}", metadata_url, e);
-                            }
-                        }
-                    } else {
-                        // Try parsing as addon index if metadata list fails
-                        let mut parser = DepotParser::new(&vendor_content);
-                        if let Ok(addons) = parser.parse_addon_index() {
-                            for addon in addons {
-                                let addon_url = if addon.url.starts_with("http") {
-                                    addon.url
-                                } else {
-                                    format!("{}/{}/{}", base_url, vendor.relative_path, addon.url)
-                                };
-                                if let Err(e) = self.process_metadata(&addon_url).await {
-                                    warn!("Error processing addon {}: {}", addon_url, e);
-                                }
-                            }
-                        } else {
-                            warn!("Failed to parse vendor index from {}", vendor_url);
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!("Error downloading vendor index {}: {}", vendor_url, e);
-                }
+            let vendor_url = format!("{}/{}/{}", base_url, vendor.relative_path, vendor.indexfile);
+            let this = self.clone();
+            vendor_tasks.push(tokio::spawn(async move {
+                this.process_vendor(&vendor_url, &vendor).await
+            }));
+        }
+
+        // Wait for all vendor tasks
+        for result in join_all(vendor_tasks).await {
+            if let Err(e) = result? {
+                warn!("Vendor processing error: {}", e);
             }
         }
 
+        Ok(())
+    }
+
+    async fn process_vendor(&self, vendor_url: &str, vendor: &Vendor) -> Result<()> {
+        // Get base URL without the XML filename
+        let base_url = vendor_url.rsplit_once('/').map(|(base, _)| base).unwrap_or(vendor_url);
+        
+        if let Ok(vendor_content) = self.download_xml(vendor_url).await {
+            if let Ok(metadata_list) = self.xml_parser.parse_metadata_list(&vendor_content) {
+                let mut metadata_tasks = Vec::new();
+                for metadata in metadata_list {
+                    // Construct metadata URL from base URL without the index XML
+                    let metadata_url = format!("{}/{}", 
+                        base_url,
+                        metadata.url
+                    );
+                    let this = self.clone();
+                    let _permit = self.download_semaphore.clone().acquire_owned().await?;
+                    metadata_tasks.push(tokio::spawn(async move {
+                        if let Err(e) = this.process_metadata(&metadata_url).await {
+                            warn!("Error processing metadata {}: {}", metadata_url, e);
+                        }
+                    }));
+                }
+                join_all(metadata_tasks).await;
+            }
+        }
         Ok(())
     }
 
@@ -216,8 +217,9 @@ impl Downloader {
         let files = self.processor.process_source(source).await?;
         info!("Found {} files to process", files.len());
 
+        // Process files concurrently while maintaining order for ZIP contents
+        let mut tasks = Vec::new();
         for file in files {
-            // Construct full relative path by combining the base relative path with file's relative path
             let full_relative_path = if file.relative_path.starts_with("http") {
                 self.extract_relative_path(&file.relative_path)
             } else {
@@ -232,7 +234,7 @@ impl Downloader {
 
             match file.file_type {
                 FileType::Xml => {
-                    // ...existing XML handling...
+                    // Process XML files sequentially to maintain dependencies
                     if let Source::Path(xml_path) = &file.source {
                         let content = tokio::fs::read_to_string(xml_path).await?;
                         let mut parser = DepotParser::new(&content);
@@ -244,48 +246,88 @@ impl Downloader {
                                 } else {
                                     format!("{}/{}", url, vib.relative_path)
                                 };
+
                                 let vib_relative_path = self.extract_relative_path(&vib_url);
                                 let vib_target_path = self.base_path.join(&vib_relative_path);
-                                
-                                info!("Processing VIB: {} -> {}", vib_url, vib_target_path.display());
-                                let vib_source = Source::Http(vib_url);
-                                
-                                if !vib_target_path.exists() {
-                                    let vib_files = self.processor.process_source(vib_source).await?;
-                                    for vib_file in vib_files {
-                                        let mut downloaded = self.downloaded.lock().await;
-                                        downloaded.insert(vib_target_path.clone());
+                                let _permit = self.download_semaphore.clone().acquire_owned().await?;
+
+                                // Add VIB download task with proper string handling
+                                let this = self.clone();
+                                tasks.push(tokio::spawn(async move {
+                                    if !vib_target_path.exists() || 
+                                       (!vib.checksum.is_empty() && !this.verifier.verify_checksum(
+                                            &vib_target_path,
+                                            &vib.checksum,
+                                            &vib.checksum_type
+                                        ).await?)
+                                    {
+                                        this.download_file(&vib_url, &vib_target_path).await?;
                                     }
-                                }
+                                    Ok::<(), anyhow::Error>(())
+                                }));
                             }
                         }
                     }
                 }
                 FileType::Zip => {
-                    info!("Processing ZIP: {}", file.relative_path);
-                    // ZIP files are already processed by processor.process_source
-                    let mut downloaded = self.downloaded.lock().await;
-                    downloaded.insert(target_path);
-                }
-                FileType::Vib => {
-                    info!("Processing VIB: {} -> {}", file.relative_path, target_path.display());
-                    if (!target_path.exists() || 
-                       (file.checksum.is_some() && !self.verifier.verify_checksum(
-                            &target_path,
-                            file.checksum.as_ref().unwrap(),
-                            file.checksum_type.as_ref().unwrap()
-                        ).await?)) 
-                    {
-                        if let Source::Http(url) = file.source {
-                            info!("Downloading VIB: {}", url);
-                            self.download_file(&url, &target_path).await?;
+                    // Process ZIP files immediately to maintain content extraction
+                    let zip_files = self.processor.process_source(file.source).await?;
+                    for zip_file in zip_files {
+                        if let FileType::Vib = zip_file.file_type {
+                            let this = self.clone();
+                            let _permit = self.download_semaphore.clone().acquire_owned().await?;
+                            let relative_path = zip_file.relative_path.clone();
+                            
+                            // Make the task Send-safe by moving all required data
+                            tasks.push(tokio::spawn(async move {
+                                if let Err(e) = this.download_file_with_verify(&relative_path).await {
+                                    warn!("Error processing ZIP VIB {}: {}", relative_path, e);
+                                }
+                                Ok::<(), anyhow::Error>(())
+                            }));
                         }
                     }
+                }
+                FileType::Vib => {
+                    // Add concurrent VIB download task
+                    let this = self.clone();
+                    let _permit = self.download_semaphore.clone().acquire_owned().await?;
+                    tasks.push(tokio::spawn(async move {
+                        if !target_path.exists() || 
+                           (file.checksum.is_some() && !this.verifier.verify_checksum(
+                                &target_path,
+                                file.checksum.as_ref().unwrap(),
+                                file.checksum_type.as_ref().unwrap()
+                            ).await?)
+                        {
+                            if let Source::Http(url) = file.source {
+                                this.download_file(&url, &target_path).await?;
+                            }
+                        }
+                        Ok::<(), anyhow::Error>(())
+                    }));
                 }
                 _ => debug!("Skipping unknown file type: {}", file.relative_path),
             }
         }
 
+        // Wait for all tasks to complete
+        for result in join_all(tasks).await {
+            if let Err(e) = result? {
+                warn!("Task error: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    // Add new helper method to handle download and verification
+    async fn download_file_with_verify(&self, relative_path: &str) -> Result<()> {
+        let target_path = self.base_path.join(relative_path);
+        if !target_path.exists() {
+            let url = format!("https://hostupdate.vmware.com/software/VUM/PRODUCTION/{}", relative_path);
+            self.download_file(&url, &target_path).await?;
+        }
         Ok(())
     }
 
