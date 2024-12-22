@@ -198,38 +198,64 @@ impl Downloader {
         Ok(())
     }
 
+    fn extract_relative_path(&self, url: &str) -> String {
+        // Find the index after "VUM/PRODUCTION/"
+        if let Some(relative_idx) = url.find("VUM/PRODUCTION/").map(|i| i + "VUM/PRODUCTION/".len()) {
+            url[relative_idx..].to_string()
+        } else {
+            // Fallback: use the last part of the URL
+            url.rsplit('/').next().unwrap_or(url).to_string()
+        }
+    }
+
     async fn process_metadata(&self, url: &str) -> Result<()> {
         info!("Processing metadata from URL: {}", url);
-        
-        // Extract base URL for resolving relative paths
-        let base_url = url.rsplit_once('/').map(|(base, _)| base).unwrap_or(url);
+        let relative_base = self.extract_relative_path(url);
         
         let source = Source::Http(url.to_string());
         let files = self.processor.process_source(source).await?;
         info!("Found {} files to process", files.len());
 
         for file in files {
-            // Use the relative path from file info to construct target path
-            let target_path = self.base_path.join(&file.relative_path);
+            // Construct full relative path by combining the base relative path with file's relative path
+            let full_relative_path = if file.relative_path.starts_with("http") {
+                self.extract_relative_path(&file.relative_path)
+            } else {
+                let base_dir = Path::new(&relative_base).parent()
+                    .unwrap_or_else(|| Path::new(""))
+                    .join(&file.relative_path);
+                base_dir.to_string_lossy().into_owned()
+            };
+
+            let target_path = self.base_path.join(&full_relative_path);
             info!("Target path: {}", target_path.display());
 
             match file.file_type {
                 FileType::Xml => {
-                    info!("Processing XML: {}", file.relative_path);
+                    // ...existing XML handling...
                     if let Source::Path(xml_path) = &file.source {
                         let content = tokio::fs::read_to_string(xml_path).await?;
-                        let mut parser = DepotParser::new(&content);  // Changed to mut
+                        let mut parser = DepotParser::new(&content);
                         
                         if let Ok(vibs) = parser.parse_vib_files() {
                             for vib in vibs {
-                                let vib_source = Source::Http(format!("{}/{}", url, vib.relative_path));
-                                info!("Found VIB: {} ({})", vib.relative_path, vib.checksum);
+                                let vib_url = if vib.relative_path.starts_with("http") {
+                                    vib.relative_path.clone()
+                                } else {
+                                    format!("{}/{}", url, vib.relative_path)
+                                };
+                                let vib_relative_path = self.extract_relative_path(&vib_url);
+                                let vib_target_path = self.base_path.join(&vib_relative_path);
                                 
-                                // Process each VIB file through the processor
-                                let vib_files = self.processor.process_source(vib_source).await?;
-                                for vib_file in vib_files {
-                                    let mut downloaded = self.downloaded.lock().await;
-                                    downloaded.insert(self.base_path.join(&vib_file.relative_path));
+                                info!("Processing VIB: {} -> {}", vib_url, vib_target_path.display());
+                                let vib_source = Source::Http(vib_url);
+                                
+                                if !vib_target_path.exists() {
+                                    let vib_files = self.processor.process_source(vib_source).await?;
+                                    for vib_file in vib_files {
+                                        let mut downloaded = self.downloaded.lock().await;
+                                        downloaded.insert(vib_target_path.clone());
+                                    }
                                 }
                             }
                         }
