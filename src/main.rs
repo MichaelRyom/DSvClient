@@ -1,4 +1,5 @@
 #![allow(unused)]
+// Version 0.1.0
 use anyhow::Result;
 use std::path::PathBuf;
 use log::{LevelFilter, warn, info, error};
