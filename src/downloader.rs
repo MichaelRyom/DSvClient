@@ -316,35 +316,45 @@ impl Downloader {
                 FileType::Vib => {
                     let this = self.clone();
                     let _permit = self.download_semaphore.clone().acquire_owned().await?;
-                    let file_clone = file.clone();  // Clone file info for the task
+                    let file_clone = file.clone();
+                    let target_path_clone = target_path.clone();
                     
                     tasks.push(tokio::spawn(async move {
-                        // First verify if exists
-                        if target_path.exists() {
+                        let should_download = if target_path_clone.exists() {
                             if let (Some(checksum), Some(checksum_type)) = (&file_clone.checksum, &file_clone.checksum_type) {
-                                let valid = this.verifier.verify_checksum(&target_path, checksum, checksum_type).await?;
-                                if !valid {
-                                    info!("Re-downloading due to checksum mismatch: {}", target_path.display());
-                                    if let Source::Http(url) = file_clone.source {
-                                        this.download_file(&url, &target_path).await?;
-                                        
-                                        // Verify after download
-                                        let valid = this.verifier.verify_checksum(&target_path, checksum, checksum_type).await?;
-                                        if !valid {
-                                            warn!("Checksum still mismatches after redownload: {}", target_path.display());
-                                            this.add_failed_download(
-                                                url.clone(),
-                                                target_path.clone(),
-                                                Some((checksum_type.clone(), checksum.clone()))
-                                            ).await;
-                                        }
-                                    }
-                                }
+                                info!("Verifying existing VIB: {}", target_path_clone.display());
+                                !this.verifier.verify_checksum(&target_path_clone, checksum, checksum_type).await?
+                            } else {
+                                false
                             }
                         } else {
-                            // File doesn't exist, download it
-                            if let Source::Http(url) = file_clone.source {
-                                this.download_file(&url, &target_path).await?;
+                            true
+                        };
+
+                        if should_download {
+                            if let Source::Http(url) = &file_clone.source {
+                                // Always try to delete the file first if it exists
+                                if target_path_clone.exists() {
+                                    info!("Deleting invalid file for redownload: {}", target_path_clone.display());
+                                    let _ = tokio::fs::remove_file(&target_path_clone).await;
+                                }
+
+                                info!("Downloading VIB: {}", target_path_clone.display());
+                                this.download_file(url, &target_path_clone).await?;
+
+                                // Verify the newly downloaded file
+                                if let (Some(checksum), Some(checksum_type)) = (&file_clone.checksum, &file_clone.checksum_type) {
+                                    let valid = this.verifier.verify_checksum(&target_path_clone, checksum, checksum_type).await?;
+                                    if !valid {
+                                        warn!("Downloaded file failed verification: {}", target_path_clone.display());
+                                        let _ = tokio::fs::remove_file(&target_path_clone).await;
+                                        this.add_failed_download(
+                                            url.clone(),
+                                            target_path_clone.clone(),
+                                            Some((checksum_type.clone(), checksum.clone()))
+                                        ).await;
+                                    }
+                                }
                             }
                         }
                         Ok::<(), anyhow::Error>(())
@@ -376,6 +386,12 @@ impl Downloader {
 
     async fn download_xml(&self, url: &str) -> Result<String> {
         let response = self.client.get(url.parse()?).await?;
+        
+        // Check status code before proceeding
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("HTTP error {}: {}", response.status(), url));
+        }
+        
         let bytes = http_body_util::BodyExt::collect(response.into_body())
             .await?
             .to_bytes();
@@ -394,15 +410,30 @@ impl Downloader {
             return Ok(());
         }
 
+        let response = self.client.get(url.parse()?).await?;
+        let status = response.status();
+
+        // Check status code before proceeding
+        if !status.is_success() {
+            warn!("HTTP {} error for URL: {}", status, url);
+            // Add to failed downloads without saving the file
+            self.add_failed_download(
+                url.to_string(),
+                target_path.to_path_buf(),
+                None
+            ).await;
+            return Err(anyhow::anyhow!("HTTP error {}: {}", status, url));
+        }
+
         // Create parent directories if they don't exist
         if let Some(parent) = target_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        let response = self.client.get(url.parse()?).await?;
         let bytes = http_body_util::BodyExt::collect(response.into_body())
             .await?
             .to_bytes();
+            
         tokio::fs::write(target_path, bytes).await?;
         
         // Track the downloaded file
@@ -410,7 +441,6 @@ impl Downloader {
         downloaded.insert(target_path.to_path_buf());
         
         info!("Downloaded: {}", target_path.display());
-
         self.mark_file_processed(relative_path).await;
         
         Ok(())
