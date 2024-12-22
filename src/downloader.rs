@@ -20,6 +20,8 @@ use rayon::prelude::*;
 const MAX_CONCURRENT_DOWNLOADS: usize = 10;
 
 type DownloadTracker = Arc<Mutex<HashSet<PathBuf>>>;
+// Add a new type for tracking processed files
+type ProcessedFiles = Arc<Mutex<HashSet<String>>>;
 
 #[derive(Clone)]
 pub struct Downloader {
@@ -31,6 +33,7 @@ pub struct Downloader {
     verifier: Arc<VerificationManager>,
     xml_parser: Arc<XmlParser>,
     download_semaphore: Arc<Semaphore>,
+    processed_files: ProcessedFiles,
 }
 
 #[derive(Debug)]
@@ -51,7 +54,20 @@ impl Downloader {
             verifier: Arc::new(VerificationManager::new_with_concurrency(100)),
             xml_parser: Arc::new(XmlParser::new()),
             download_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_DOWNLOADS)),
+            processed_files: Arc::new(Mutex::new(HashSet::new())),
         }
+    }
+
+    // Add helper method to check if file was processed
+    async fn is_file_processed(&self, relative_path: &str) -> bool {
+        let processed = self.processed_files.lock().await;
+        processed.contains(relative_path)
+    }
+
+    // Add helper method to mark file as processed
+    async fn mark_file_processed(&self, relative_path: String) {
+        let mut processed = self.processed_files.lock().await;
+        processed.insert(relative_path);
     }
 
     async fn parse_vendors(&self, url: &str, content: &str) -> Result<Vec<(String, String)>> {
@@ -229,6 +245,15 @@ impl Downloader {
                 base_dir.to_string_lossy().into_owned()
             };
 
+            // Skip if already processed
+            if self.is_file_processed(&full_relative_path).await {
+                debug!("Skipping already processed file: {}", full_relative_path);
+                continue;
+            }
+            
+            // Mark as processed before starting work
+            self.mark_file_processed(full_relative_path.clone()).await;
+
             let target_path = self.base_path.join(&full_relative_path);
             info!("Target path: {}", target_path.display());
 
@@ -289,18 +314,36 @@ impl Downloader {
                     }
                 }
                 FileType::Vib => {
-                    // Add concurrent VIB download task
                     let this = self.clone();
                     let _permit = self.download_semaphore.clone().acquire_owned().await?;
+                    let file_clone = file.clone();  // Clone file info for the task
+                    
                     tasks.push(tokio::spawn(async move {
-                        if !target_path.exists() || 
-                           (file.checksum.is_some() && !this.verifier.verify_checksum(
-                                &target_path,
-                                file.checksum.as_ref().unwrap(),
-                                file.checksum_type.as_ref().unwrap()
-                            ).await?)
-                        {
-                            if let Source::Http(url) = file.source {
+                        // First verify if exists
+                        if target_path.exists() {
+                            if let (Some(checksum), Some(checksum_type)) = (&file_clone.checksum, &file_clone.checksum_type) {
+                                let valid = this.verifier.verify_checksum(&target_path, checksum, checksum_type).await?;
+                                if !valid {
+                                    info!("Re-downloading due to checksum mismatch: {}", target_path.display());
+                                    if let Source::Http(url) = file_clone.source {
+                                        this.download_file(&url, &target_path).await?;
+                                        
+                                        // Verify after download
+                                        let valid = this.verifier.verify_checksum(&target_path, checksum, checksum_type).await?;
+                                        if !valid {
+                                            warn!("Checksum still mismatches after redownload: {}", target_path.display());
+                                            this.add_failed_download(
+                                                url.clone(),
+                                                target_path.clone(),
+                                                Some((checksum_type.clone(), checksum.clone()))
+                                            ).await;
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // File doesn't exist, download it
+                            if let Source::Http(url) = file_clone.source {
                                 this.download_file(&url, &target_path).await?;
                             }
                         }
@@ -341,6 +384,16 @@ impl Downloader {
     }
 
     async fn download_file(&self, url: &str, target_path: &Path) -> Result<()> {
+        // Skip if file exists and is tracked
+        let relative_path = target_path.strip_prefix(&self.base_path)
+            .map_or_else(|_| target_path.to_string_lossy().to_string(),
+                        |p| p.to_string_lossy().to_string());
+
+        if self.is_file_processed(&relative_path).await && target_path.exists() {
+            debug!("Skipping already downloaded file: {}", target_path.display());
+            return Ok(());
+        }
+
         // Create parent directories if they don't exist
         if let Some(parent) = target_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
@@ -357,6 +410,9 @@ impl Downloader {
         downloaded.insert(target_path.to_path_buf());
         
         info!("Downloaded: {}", target_path.display());
+
+        self.mark_file_processed(relative_path).await;
+        
         Ok(())
     }
 
