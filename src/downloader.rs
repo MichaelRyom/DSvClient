@@ -97,23 +97,35 @@ impl Downloader {
         let base_url = url.rsplit_once('/').map(|(base, _)| base).unwrap_or(url);
         
         // Download and parse the main index XML
-        let index_content = self.download_xml(url).await?;
-        let vendors = self.xml_parser.parse_vendor_list(&index_content)?;
-        
-        // Process vendors concurrently
-        let mut vendor_tasks = Vec::new();
-        for vendor in vendors {
-            let vendor_url = format!("{}/{}/{}", base_url, vendor.relative_path, vendor.indexfile);
-            let this = self.clone();
-            vendor_tasks.push(tokio::spawn(async move {
-                this.process_vendor(&vendor_url, &vendor).await
-            }));
-        }
+        match self.download_xml(url).await {
+            Ok(index_content) => {
+                // Try to process as a vendor list first (like addon-main)
+                if let Ok(vendors) = self.xml_parser.parse_vendor_list(&index_content) {
+                    // Process vendors concurrently
+                    let mut vendor_tasks = Vec::new();
+                    for vendor in vendors {
+                        let vendor_url = format!("{}/{}/{}", base_url, vendor.relative_path, vendor.indexfile);
+                        let this = self.clone();
+                        vendor_tasks.push(tokio::spawn(async move {
+                            this.process_vendor(&vendor_url, &vendor).await
+                        }));
+                    }
 
-        // Wait for all vendor tasks
-        for result in join_all(vendor_tasks).await {
-            if let Err(e) = result? {
-                warn!("Vendor processing error: {}", e);
+                    // Wait for all vendor tasks
+                    for result in join_all(vendor_tasks).await {
+                        if let Err(e) = result? {
+                            warn!("Vendor processing error: {}", e);
+                        }
+                    }
+                } else {
+                    // If not a vendor list, try direct metadata processing
+                    let this = self.clone();
+                    this.process_metadata(url).await?;
+                }
+            }
+            Err(e) => {
+                warn!("Failed to download or parse index XML from {}: {}", url, e);
+                return Err(e);
             }
         }
 
@@ -124,24 +136,27 @@ impl Downloader {
         // Get base URL without the XML filename
         let base_url = vendor_url.rsplit_once('/').map(|(base, _)| base).unwrap_or(vendor_url);
         
-        if let Ok(vendor_content) = self.download_xml(vendor_url).await {
-            if let Ok(metadata_list) = self.xml_parser.parse_metadata_list(&vendor_content) {
-                let mut metadata_tasks = Vec::new();
-                for metadata in metadata_list {
-                    // Construct metadata URL from base URL without the index XML
-                    let metadata_url = format!("{}/{}", 
-                        base_url,
-                        metadata.url
-                    );
-                    let this = self.clone();
-                    let _permit = self.download_semaphore.clone().acquire_owned().await?;
-                    metadata_tasks.push(tokio::spawn(async move {
-                        if let Err(e) = this.process_metadata(&metadata_url).await {
-                            warn!("Error processing metadata {}: {}", metadata_url, e);
-                        }
-                    }));
+        match self.download_xml(vendor_url).await {
+            Ok(vendor_content) => {
+                if let Ok(metadata_list) = self.xml_parser.parse_metadata_list(&vendor_content) {
+                    // Process all metadata concurrently with rate limiting
+                    let mut metadata_tasks = Vec::new();
+                    for metadata in metadata_list {
+                        let metadata_url = format!("{}/{}", base_url, metadata.url);
+                        let this = self.clone();
+                        let _permit = self.download_semaphore.clone().acquire_owned().await?;
+                        metadata_tasks.push(tokio::spawn(async move {
+                            if let Err(e) = this.process_metadata(&metadata_url).await {
+                                warn!("Error processing metadata {}: {}", metadata_url, e);
+                            }
+                        }));
+                    }
+                    join_all(metadata_tasks).await;
                 }
-                join_all(metadata_tasks).await;
+            }
+            Err(e) => {
+                warn!("Failed to download or parse vendor XML from {}: {}", vendor_url, e);
+                return Err(e);
             }
         }
         Ok(())
@@ -149,15 +164,24 @@ impl Downloader {
 
     pub async fn process_sources(&self) -> Result<()> {
         let sources = self.read_sources_file().await?;
+        
+        // Process all sources concurrently
+        let mut tasks = Vec::new();
         for source in sources {
             if source.enabled && source.connected {
-                info!("Processing enabled source: {}", source.url);
-                if let Err(e) = self.process_repository(&source.url).await {
-                    warn!("Error processing {}: {}", source.url, e);
-                    continue;
-                }
+                let this = self.clone();
+                let url = source.url.clone();
+                tasks.push(tokio::spawn(async move {
+                    info!("Processing enabled source: {}", url);
+                    if let Err(e) = this.process_repository(&url).await {
+                        warn!("Error processing {}: {}", url, e);
+                    }
+                }));
             }
         }
+        
+        // Wait for all tasks to complete
+        join_all(tasks).await;
         Ok(())
     }
 
@@ -385,9 +409,25 @@ impl Downloader {
     }
 
     async fn download_xml(&self, url: &str) -> Result<String> {
+        // Create the target path for the XML file
+        let relative_path = self.extract_relative_path(url);
+        let target_path = self.base_path.join(&relative_path);
+
+        // Check if XML exists and try to read it first
+        if target_path.exists() {
+            match tokio::fs::read_to_string(&target_path).await {
+                Ok(content) => {
+                    debug!("Using cached XML file: {}", target_path.display());
+                    return Ok(content);
+                }
+                Err(e) => warn!("Failed to read cached XML {}: {}", target_path.display(), e),
+            }
+        }
+
+        // Download if not cached or cache read failed
+        info!("Downloading XML: {}", url);
         let response = self.client.get(url.parse()?).await?;
         
-        // Check status code before proceeding
         if !response.status().is_success() {
             return Err(anyhow::anyhow!("HTTP error {}: {}", response.status(), url));
         }
@@ -396,6 +436,14 @@ impl Downloader {
             .await?
             .to_bytes();
         let content = String::from_utf8(bytes.to_vec())?;
+
+        // Save the XML file
+        if let Some(parent) = target_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(&target_path, &content).await?;
+        info!("Saved XML file: {}", target_path.display());
+
         Ok(content)
     }
 
