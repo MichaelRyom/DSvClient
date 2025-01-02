@@ -144,8 +144,8 @@ impl VerificationManager {
             return Ok(false);
         }
 
-        info!("Verifying checksum for: {}", path.display());
-        info!("Expected SHA-256: {}", expected);
+        info!("Verifying checksum for: {} Expected SHA-256: {}", path.display(), expected);
+        //info!("Expected SHA-256: {}", expected);
 
         let _permit = self.semaphore.acquire().await?;
         let path_for_closure = path.to_path_buf();  // Create a clone for the closure
@@ -174,12 +174,12 @@ impl VerificationManager {
             Ok(calculated == expected.to_lowercase())
         }).await??;
 
-        match result {
+        /*match result {
             true => info!("Checksum verified successfully for {} ({} bytes)", 
                 path_for_info.display(), 
                 path_for_info.metadata()?.len()),
             false => warn!("Checksum mismatch for {}", path_for_info.display()),
-        }
+        }*/
 
         Ok(result)
     }
@@ -280,7 +280,7 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
     }
 
     // Process sources from sources file
-    let sources = include_str!("../sources");
+    /*let sources = include_str!("../sources");
     let mut rdr = csv::Reader::from_reader(sources.as_bytes());
     
     for result in rdr.records() {
@@ -330,7 +330,7 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
             }
         }
     }
-
+*/
     Ok(())
 }
 
@@ -356,8 +356,8 @@ pub async fn verify_vib_file(
 
     if let (Some(checksum), Some(checksum_type)) = (&file_info.checksum, &file_info.checksum_type) {
         let file_size = vib_path.metadata()?.len();
-        info!("Verifying VIB file: {} ({} bytes)", vib_path.display(), file_size);
-        info!("Expected {} checksum: {}", checksum_type, checksum);
+        info!("Verifying VIB file: {} ({} bytes) Expected {} checksum: {}", vib_path.display(), file_size, checksum_type, checksum);
+        //info!("Expected {} checksum: {}", checksum_type, checksum);
 
         match manager.verify_checksum(&vib_path, checksum, checksum_type).await {
             Ok(true) => {
