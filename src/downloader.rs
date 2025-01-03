@@ -16,6 +16,8 @@ use std::pin::Pin;
 use std::future::Future;
 use futures::future::join_all;
 use rayon::prelude::*;
+use serde::Deserialize;
+use crate::config::AppConfig;  // Use renamed import
 
 const MAX_CONCURRENT_DOWNLOADS: usize = 10;
 
@@ -34,27 +36,42 @@ pub struct Downloader {
     xml_parser: Arc<XmlParser>,
     download_semaphore: Arc<Semaphore>,
     processed_files: ProcessedFiles,
+    config: Arc<AppConfig>,  // Use AppConfig instead of Config
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
+struct SourceConfig {
+    sources: Vec<SourceEntry>
+}
+
+#[derive(Debug, Deserialize)]
 struct SourceEntry {
     url: String,
     enabled: bool,
-    connected: bool,
+    status: String,
+    vendor: String,
+    #[serde(rename = "type")]
+    source_type: String,
+    description: String,
 }
 
 impl Downloader {
-    pub fn new(base_path: PathBuf, client: Client<HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>, Empty<Bytes>>) -> Self {
+    pub fn new(
+        base_path: PathBuf, 
+        client: Client<HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>, Empty<Bytes>>,
+        config: AppConfig
+    ) -> Self {
         Self {
             base_path: base_path.clone(),
             client: client.clone(),
             downloaded: Arc::new(Mutex::new(HashSet::new())),
             failed: Arc::new(Mutex::new(HashMap::new())),
             processor: Arc::new(ProcessManager::new(client.clone(), base_path.clone())),
-            verifier: Arc::new(VerificationManager::new_with_concurrency(100)),
+            verifier: Arc::new(VerificationManager::new(config.clone())),
             xml_parser: Arc::new(XmlParser::new()),
-            download_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_DOWNLOADS)),
+            download_semaphore: Arc::new(Semaphore::new(config.download.max_concurrent_downloads)),
             processed_files: Arc::new(Mutex::new(HashSet::new())),
+            config: Arc::new(config),
         }
     }
 
@@ -168,7 +185,7 @@ impl Downloader {
         // Process all sources concurrently
         let mut tasks = Vec::new();
         for source in sources {
-            if source.enabled && source.connected {
+            if source.enabled && source.status == "Connected" {
                 let this = self.clone();
                 let url = source.url.clone();
                 tasks.push(tokio::spawn(async move {
@@ -186,39 +203,19 @@ impl Downloader {
     }
 
     async fn read_sources_file(&self) -> Result<Vec<SourceEntry>> {
-        let sources_file = PathBuf::from("sources");
-        if !sources_file.exists() {
-            return Err(anyhow::anyhow!("Sources file not found"));
+        let sources_file = PathBuf::from("sources.toml");
+        if (!sources_file.exists()) {
+            return Err(anyhow::anyhow!("sources.toml file not found"));
         }
 
         let content = tokio::fs::read_to_string(sources_file).await?;
-        let mut sources = Vec::new();
-        let mut rdr = csv::ReaderBuilder::new()
-            .has_headers(true)
-            .from_reader(content.as_bytes());
-
-        for result in rdr.records() {
-            let record = result?;
-            if let (Some(url), Some(enabled), Some(status)) = (
-                record.get(0),
-                record.get(1),
-                record.get(2)
-            ) {
-                // Remove quotes from URL if present
-                let clean_url = url.trim_matches('"').to_string();
-                sources.push(SourceEntry {
-                    url: clean_url,
-                    enabled: enabled.trim() == "Yes",
-                    connected: status.trim() == "Connected",
-                });
-            }
+        let config: SourceConfig = toml::from_str(&content)?;
+        
+        if config.sources.is_empty() {
+            warn!("No valid sources found in sources.toml");
         }
 
-        if sources.is_empty() {
-            warn!("No valid sources found in sources file");
-        }
-
-        Ok(sources)
+        Ok(config.sources)
     }
 
     pub async fn process_sources_file(&self) -> Result<()> {

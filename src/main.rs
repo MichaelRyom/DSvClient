@@ -14,9 +14,15 @@ mod downloader;
 mod parser;
 mod verify;
 mod process;
+mod config;
+
+use crate::config::AppConfig;  // Use renamed import
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load config first
+    let config = AppConfig::load_or_default();
+
     let args: Vec<String> = std::env::args().collect();
     
     // Check for --verify flag but exclude it from being treated as a path
@@ -34,6 +40,12 @@ async fn main() -> Result<()> {
 
     info!("Using download path: {}", download_path.display());
     std::fs::create_dir_all(&download_path)?;
+    
+    // Check for sources.toml instead of sources
+    if !PathBuf::from("sources.toml").exists() {
+        error!("sources.toml file not found");
+        std::process::exit(1);
+    }
     
     // Set up logging
     let log_file = File::create(download_path.join("download_errors.log"))?;
@@ -54,7 +66,11 @@ async fn main() -> Result<()> {
     let https = HttpsConnector::new();
     let client = Client::builder(hyper_util::rt::TokioExecutor::new())
         .build::<_, Empty<Bytes>>(https);
-    let service = downloader::Downloader::new(download_path.clone(), client);
+    let service = downloader::Downloader::new(
+        download_path.clone(), 
+        client,
+        config.clone()  // Pass config to Downloader
+    );
     
     if verify {
         info!("Starting verification process...");

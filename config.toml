@@ -1,0 +1,11 @@
+[verification]
+chunk_size = 262144  # 256KB
+max_concurrent_files = 1000
+max_concurrent_verifications = 32  # 4 * num_cpus by default
+
+[download]
+max_concurrent_downloads = 10
+buffer_size = 8388608  # 8MB
+
+[general]
+thread_sleep_ms = 0

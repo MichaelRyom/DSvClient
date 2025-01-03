@@ -20,6 +20,12 @@ use tokio::time::sleep;
 use std::sync::Mutex;
 use tokio::sync::Mutex as TokioMutex;
 use std::collections::HashMap;
+use crate::Config;
+use crate::config::AppConfig;  // Use renamed import
+use simplelog::Config as LogConfig;  // Rename conflicting imports
+use quick_xml::reader::Config as XmlConfig;
+use zip::read::Config as ZipConfig;
+
 
 // Increase parallelism and optimize buffer sizes
 const VERIFICATION_CHUNK_SIZE: usize = 256 * 1024; // 256KB is optimal for most filesystems
@@ -120,16 +126,15 @@ impl AsyncReport {
 pub struct VerificationManager {
     thread_pool: Arc<rayon::ThreadPool>,
     semaphore: Arc<Semaphore>,
+    config: Arc<AppConfig>,  // Use AppConfig instead of Config
 }
 
 impl VerificationManager {
-    pub fn new() -> Self {
-        // Maximize CPU utilization
-        let concurrent_verifications = num_cpus::get() * 8;
-        Self::new_with_concurrency(concurrent_verifications)
+    pub fn new(config: AppConfig) -> Self {
+        Self::new_with_concurrency(config.verification.max_concurrent_verifications, config)
     }
 
-    pub fn new_with_concurrency(concurrent_verifications: usize) -> Self {
+    pub fn new_with_concurrency(concurrent_verifications: usize, config: AppConfig) -> Self {
         let thread_pool = ThreadPoolBuilder::new()
             .num_threads(concurrent_verifications)
             .build()
@@ -138,6 +143,7 @@ impl VerificationManager {
         Self {
             thread_pool: Arc::new(thread_pool),
             semaphore: Arc::new(Semaphore::new(concurrent_verifications)),
+            config: Arc::new(config),  // Initialize config
         }
     }
     
@@ -149,15 +155,16 @@ impl VerificationManager {
         let _permit = self.semaphore.acquire().await?;
         let path_for_closure = path.to_path_buf();
         let expected = expected.to_string();
+        let chunk_size = self.config.verification.chunk_size;  // Use config
 
         let result = task::spawn_blocking(move || -> Result<bool> {
             use std::fs::File;
             use std::io::{BufReader, Read};
             
             let file = File::open(&path_for_closure)?;
-            let mut reader = BufReader::with_capacity(VERIFICATION_CHUNK_SIZE, file);
+            let mut reader = BufReader::with_capacity(chunk_size, file);  // Use config
             let mut hasher = Sha256::new();
-            let mut buffer = vec![0; VERIFICATION_CHUNK_SIZE];
+            let mut buffer = vec![0; chunk_size];  // Use config
 
             while let Ok(n) = reader.read(&mut buffer) {
                 if n == 0 { break; }
@@ -173,8 +180,9 @@ impl VerificationManager {
 
 // Update function signature to accept Path
 pub async fn verify_directory(source: &Path) -> Result<VerificationReport> {
+    let config = AppConfig::load_or_default();
     let report = AsyncReport::new();
-    let verifier = VerificationManager::new(); // Use new() which handles CPU detection internally
+    let verifier = VerificationManager::new(config);
 
     // Check if source is a path or URL
     if let Some(s) = source.to_str() {
@@ -272,7 +280,8 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
     
     for (vib_path, checksum_info) in checksums.iter() {
         if let Some((checksum, checksum_type)) = checksum_info {
-            let verifier = VerificationManager::new(); // Create new instance instead of cloning
+            let config = AppConfig::load_or_default();  // Use AppConfig instead of Config
+            let verifier = VerificationManager::new(config);
             let report = AsyncReport::new(); // Create new instance instead of cloning
             let path = vib_path.clone();
             let checksum = checksum.clone();
@@ -333,4 +342,5 @@ pub async fn verify_vib_file(
     }
 
     Ok(())
+
 }

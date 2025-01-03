@@ -10,9 +10,9 @@ hyper-util = { version = "0.1", features = ["full"] }
 http-body-util = "0.1"
 bytes = "1.0"
 hyper-tls = "0.6.0"
-quick-xml = { version = "0.37.1", features = ["async-tokio", "serialize", "serde"] }
+quick-xml = { version = "0.37.2", features = ["async-tokio", "serialize", "serde"] }
 csv = "1.2"
-anyhow = "1.0"
+anyhow = "1.0.95"
 futures = "0.3"
 path-clean = "1.0"
 zip = "2.2.2"
@@ -22,5 +22,6 @@ simplelog = "0.12"
 sha2 = "0.10"
 rayon = "1.5"
 num_cpus = "1.13.0"
-async-trait = "0.1"
-serde = { version = "1.0", features = ["derive"] }
+async-trait = "0.1.84"
+serde = { version = "1.0.217", features = ["derive"] }
+toml = "0.8.19"

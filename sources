@@ -1,5 +1,0 @@
-"Download Source","Enabled","Connectivity Status","Source","Component","Description"
-"https://hostupdate.vmware.com/software/VUM/PRODUCTION/addon-main/vmw-depot-index.xml","Yes","Connected","VMware","Host","Partner provided Addons for ESXi"
-"https://hostupdate.vmware.com/software/VUM/PRODUCTION/main/vmw-depot-index.xml","Yes","Connected","VMware","Host","Download vSphere ESXi and ESX patches"
-"https://hostupdate.vmware.com/software/VUM/PRODUCTION/iovp-main/vmw-depot-index.xml","Yes","Connected","VMware","Host","VMware Certified Async Drivers for ESXi"
-"https://hostupdate.vmware.com/software/VUM/PRODUCTION/vmtools-main/vmw-depot-index.xml","Yes","Connected","VMware","Host","VMware Async Releases for VM-tools on ESXi"

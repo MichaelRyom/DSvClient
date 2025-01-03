@@ -1,0 +1,32 @@
+# VMware ESXi Update Sources
+[[sources]]
+url = "https://hostupdate.vmware.com/software/VUM/PRODUCTION/addon-main/vmw-depot-index.xml"
+enabled = true
+status = "Connected"
+vendor = "VMware"
+type = "Host"
+description = "Partner provided Addons for ESXi"
+
+[[sources]]
+url = "https://hostupdate.vmware.com/software/VUM/PRODUCTION/main/vmw-depot-index.xml"
+enabled = true
+status = "Connected"
+vendor = "VMware"
+type = "Host"
+description = "Download vSphere ESXi and ESX patches"
+
+[[sources]]
+url = "https://hostupdate.vmware.com/software/VUM/PRODUCTION/iovp-main/vmw-depot-index.xml"
+enabled = true
+status = "Connected"
+vendor = "VMware"
+type = "Host"
+description = "VMware Certified Async Drivers for ESXi"
+
+[[sources]]
+url = "https://hostupdate.vmware.com/software/VUM/PRODUCTION/vmtools-main/vmw-depot-index.xml"
+enabled = true
+status = "Connected"
+vendor = "VMware"
+type = "Host"
+description = "VMware Async Releases for VM-tools on ESXi"
