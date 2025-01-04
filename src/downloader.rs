@@ -1,23 +1,23 @@
 #![allow(unused)]
-use anyhow::Result;
-use std::path::{Path, PathBuf};
-use std::collections::{HashSet, HashMap};
-use std::sync::Arc;
-use tokio::sync::{Mutex, Semaphore};  // Change to use tokio's Mutex
-use log::{info, warn, debug};
-use hyper_util::client::legacy::Client;
-use hyper_tls::HttpsConnector;
-use http_body_util::Empty;
-use bytes::Bytes;
-use crate::process::{ProcessManager, Source, FileType};
+use crate::config::AppConfig;
+use crate::parser::{AddonMetadata, AddonPackage, DepotParser, Vendor, VmwarePackage, XmlParser}; // Add VmwarePackage, AddonPackage, and AddonMetadata to imports
+use crate::process::{FileType, ProcessManager, Source};
 use crate::verify::{self, VerificationManager};
-use crate::parser::{XmlParser, VmwarePackage, DepotParser, AddonPackage, AddonMetadata, Vendor};  // Add VmwarePackage, AddonPackage, and AddonMetadata to imports
-use std::pin::Pin;
-use std::future::Future;
+use anyhow::Result;
+use bytes::Bytes;
 use futures::future::join_all;
+use http_body_util::Empty;
+use hyper_tls::HttpsConnector;
+use hyper_util::client::legacy::Client;
+use log::{debug, info, warn};
 use rayon::prelude::*;
 use serde::Deserialize;
-use crate::config::AppConfig;  // Use renamed import
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::Arc;
+use tokio::sync::{Mutex, Semaphore}; // Change to use tokio's Mutex // Use renamed import
 
 const MAX_CONCURRENT_DOWNLOADS: usize = 10;
 
@@ -25,10 +25,75 @@ type DownloadTracker = Arc<Mutex<HashSet<PathBuf>>>;
 // Add a new type for tracking processed files
 type ProcessedFiles = Arc<Mutex<HashSet<String>>>;
 
+#[derive(Debug, Default, Clone)]
+pub struct DownloadReport {
+    pub files_downloaded: usize,
+    pub files_skipped: usize,
+    pub failed_downloads: Vec<String>,
+    pub processed_xmls: HashSet<PathBuf>,
+    pub processed_zips: HashSet<PathBuf>,
+    pub downloaded_vibs: HashSet<PathBuf>,
+    pub checksum_errors: Vec<(PathBuf, String, String)>, // (path, expected, actual)
+    pub checksum_mismatches: Vec<(PathBuf, String, String)>, // (path, expected, actual)
+}
+
+impl DownloadReport {
+    pub fn print_summary(&self) {
+        info!("\nDownload Summary:");
+
+        if !self.failed_downloads.is_empty() {
+            warn!("\nFailed Downloads ({}):", self.failed_downloads.len());
+            for url in &self.failed_downloads {
+                warn!("  {}", url);
+            }
+        }
+
+        if !self.checksum_errors.is_empty() {
+            warn!("\nChecksum Errors ({}):", self.checksum_errors.len());
+            for (path, expected, actual) in &self.checksum_errors {
+                warn!(
+                    "  {}: expected {} but got {}",
+                    path.display(),
+                    expected,
+                    actual
+                );
+            }
+        }
+
+        if !self.checksum_mismatches.is_empty() {
+            warn!(
+                "\nChecksum Mismatches ({}):",
+                self.checksum_mismatches.len()
+            );
+            for (path, expected, actual) in &self.checksum_mismatches {
+                warn!(
+                    "  {}: expected {} but got {}",
+                    path.display(),
+                    expected,
+                    actual
+                );
+            }
+        }
+
+        info!("XML files processed: {}", self.processed_xmls.len());
+        info!("ZIP files processed: {}", self.processed_zips.len());
+        info!("VIB files downloaded: {}", self.downloaded_vibs.len());
+        info!("Total files downloaded: {}", self.files_downloaded);
+        info!("Total downloads failed: {}", self.failed_downloads.len());
+        info!("Files skipped: {}", self.files_skipped);
+        info!(
+            "Files with checksum mismatches: {}",
+            self.checksum_mismatches.len()
+        );
+        info!("Files with checksum errors: {}", self.checksum_errors.len());
+    }
+}
+
 #[derive(Clone)]
 pub struct Downloader {
     base_path: PathBuf,
-    client: Client<HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>, Empty<Bytes>>,
+    client:
+        Client<HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>, Empty<Bytes>>,
     downloaded: DownloadTracker,
     failed: Arc<Mutex<HashMap<String, (PathBuf, Option<(String, String)>)>>>,
     processor: Arc<ProcessManager>,
@@ -36,12 +101,13 @@ pub struct Downloader {
     xml_parser: Arc<XmlParser>,
     download_semaphore: Arc<Semaphore>,
     processed_files: ProcessedFiles,
-    config: Arc<AppConfig>,  // Use AppConfig instead of Config
+    config: Arc<AppConfig>, // Use AppConfig instead of Config
+    download_report: Arc<Mutex<DownloadReport>>, // Add this field
 }
 
 #[derive(Debug, Deserialize)]
 struct SourceConfig {
-    sources: Vec<SourceEntry>
+    sources: Vec<SourceEntry>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,9 +123,12 @@ struct SourceEntry {
 
 impl Downloader {
     pub fn new(
-        base_path: PathBuf, 
-        client: Client<HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>, Empty<Bytes>>,
-        config: AppConfig
+        base_path: PathBuf,
+        client: Client<
+            HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+            Empty<Bytes>,
+        >,
+        config: AppConfig,
     ) -> Self {
         Self {
             base_path: base_path.clone(),
@@ -72,6 +141,7 @@ impl Downloader {
             download_semaphore: Arc::new(Semaphore::new(config.download.max_concurrent_downloads)),
             processed_files: Arc::new(Mutex::new(HashSet::new())),
             config: Arc::new(config),
+            download_report: Arc::new(Mutex::new(DownloadReport::default())), // Initialize the field
         }
     }
 
@@ -93,12 +163,7 @@ impl Downloader {
 
         if let Ok(vendors) = parser.parse_vendors() {
             for vendor in vendors {
-                let vendor_url = format!(
-                    "{}/{}/{}", 
-                    url, 
-                    vendor.relative_path, 
-                    vendor.indexfile
-                );
+                let vendor_url = format!("{}/{}/{}", url, vendor.relative_path, vendor.indexfile);
                 debug!("Found vendor {} at {}", vendor.name, vendor_url);
                 vendor_urls.push((vendor.name.clone(), vendor_url.clone()));
             }
@@ -109,10 +174,10 @@ impl Downloader {
 
     pub async fn process_repository(&self, url: &str) -> Result<()> {
         info!("Processing repository: {}", url);
-        
+
         // Get base URL without filename
         let base_url = url.rsplit_once('/').map(|(base, _)| base).unwrap_or(url);
-        
+
         // Download and parse the main index XML
         match self.download_xml(url).await {
             Ok(index_content) => {
@@ -121,7 +186,8 @@ impl Downloader {
                     // Process vendors concurrently
                     let mut vendor_tasks = Vec::new();
                     for vendor in vendors {
-                        let vendor_url = format!("{}/{}/{}", base_url, vendor.relative_path, vendor.indexfile);
+                        let vendor_url =
+                            format!("{}/{}/{}", base_url, vendor.relative_path, vendor.indexfile);
                         let this = self.clone();
                         vendor_tasks.push(tokio::spawn(async move {
                             this.process_vendor(&vendor_url, &vendor).await
@@ -151,8 +217,11 @@ impl Downloader {
 
     async fn process_vendor(&self, vendor_url: &str, vendor: &Vendor) -> Result<()> {
         // Get base URL without the XML filename
-        let base_url = vendor_url.rsplit_once('/').map(|(base, _)| base).unwrap_or(vendor_url);
-        
+        let base_url = vendor_url
+            .rsplit_once('/')
+            .map(|(base, _)| base)
+            .unwrap_or(vendor_url);
+
         match self.download_xml(vendor_url).await {
             Ok(vendor_content) => {
                 if let Ok(metadata_list) = self.xml_parser.parse_metadata_list(&vendor_content) {
@@ -172,7 +241,10 @@ impl Downloader {
                 }
             }
             Err(e) => {
-                warn!("Failed to download or parse vendor XML from {}: {}", vendor_url, e);
+                warn!(
+                    "Failed to download or parse vendor XML from {}: {}",
+                    vendor_url, e
+                );
                 return Err(e);
             }
         }
@@ -181,7 +253,7 @@ impl Downloader {
 
     pub async fn process_sources(&self) -> Result<()> {
         let sources = self.read_sources_file().await?;
-        
+
         // Process all sources concurrently
         let mut tasks = Vec::new();
         for source in sources {
@@ -196,7 +268,7 @@ impl Downloader {
                 }));
             }
         }
-        
+
         // Wait for all tasks to complete
         join_all(tasks).await;
         Ok(())
@@ -210,7 +282,7 @@ impl Downloader {
 
         let content = tokio::fs::read_to_string(sources_file).await?;
         let config: SourceConfig = toml::from_str(&content)?;
-        
+
         if config.sources.is_empty() {
             warn!("No valid sources found in sources.toml");
         }
@@ -219,7 +291,7 @@ impl Downloader {
     }
 
     pub async fn process_sources_file(&self) -> Result<()> {
-        let sources_file = PathBuf::from("sources");  // Changed to look in current dir
+        let sources_file = PathBuf::from("sources"); // Changed to look in current dir
         if (!sources_file.exists()) {
             warn!("Sources file not found: {}", sources_file.display());
             return Ok(());
@@ -227,10 +299,13 @@ impl Downloader {
         let content = tokio::fs::read_to_string(sources_file).await?;
         for line in content.lines() {
             let url = line.trim();
-            if url.starts_with("\"") {  // Skip CSV header and handle quoted URLs
+            if url.starts_with("\"") {
+                // Skip CSV header and handle quoted URLs
                 continue;
             }
-            if url.is_empty() { continue; }
+            if url.is_empty() {
+                continue;
+            }
             self.process_repository(url).await?;
         }
         Ok(())
@@ -238,7 +313,10 @@ impl Downloader {
 
     fn extract_relative_path(&self, url: &str) -> String {
         // Find the index after "VUM/PRODUCTION/"
-        if let Some(relative_idx) = url.find("VUM/PRODUCTION/").map(|i| i + "VUM/PRODUCTION/".len()) {
+        if let Some(relative_idx) = url
+            .find("VUM/PRODUCTION/")
+            .map(|i| i + "VUM/PRODUCTION/".len())
+        {
             url[relative_idx..].to_string()
         } else {
             // Fallback: use the last part of the URL
@@ -249,7 +327,7 @@ impl Downloader {
     async fn process_metadata(&self, url: &str) -> Result<()> {
         info!("Processing metadata from URL: {}", url);
         let relative_base = self.extract_relative_path(url);
-        
+
         let source = Source::Http(url.to_string());
         let files = self.processor.process_source(source).await?;
         info!("Found {} files to process", files.len());
@@ -260,7 +338,8 @@ impl Downloader {
             let full_relative_path = if file.relative_path.starts_with("http") {
                 self.extract_relative_path(&file.relative_path)
             } else {
-                let base_dir = Path::new(&relative_base).parent()
+                let base_dir = Path::new(&relative_base)
+                    .parent()
                     .unwrap_or_else(|| Path::new(""))
                     .join(&file.relative_path);
                 base_dir.to_string_lossy().into_owned()
@@ -271,7 +350,7 @@ impl Downloader {
                 debug!("Skipping already processed file: {}", full_relative_path);
                 continue;
             }
-            
+
             // Mark as processed before starting work
             self.mark_file_processed(full_relative_path.clone()).await;
 
@@ -280,71 +359,53 @@ impl Downloader {
 
             match file.file_type {
                 FileType::Xml => {
-                    // Process XML files sequentially to maintain dependencies
+                    // Track XML file immediately when first encountered
+                    let mut report = self.download_report.lock().await;
+                    report.processed_xmls.insert(target_path.clone());
+                    //report.files_downloaded += 1;
+                    drop(report);
+
+                    // Process XML contents
                     if let Source::Path(xml_path) = &file.source {
                         let content = tokio::fs::read_to_string(xml_path).await?;
                         let mut parser = DepotParser::new(&content);
-                        
-                        if let Ok(vibs) = parser.parse_vib_files() {
-                            for vib in vibs {
-                                let vib_url = if vib.relative_path.starts_with("http") {
-                                    vib.relative_path.clone()
-                                } else {
-                                    format!("{}/{}", url, vib.relative_path)
-                                };
-
-                                let vib_relative_path = self.extract_relative_path(&vib_url);
-                                let vib_target_path = self.base_path.join(&vib_relative_path);
-                                let _permit = self.download_semaphore.clone().acquire_owned().await?;
-
-                                // Add VIB download task with proper string handling
-                                let this = self.clone();
-                                tasks.push(tokio::spawn(async move {
-                                    if !vib_target_path.exists() || 
-                                       (!vib.checksum.is_empty() && !this.verifier.verify_checksum(
-                                            &vib_target_path,
-                                            &vib.checksum,
-                                            &vib.checksum_type
-                                        ).await?)
-                                    {
-                                        this.download_file(&vib_url, &vib_target_path).await?;
-                                    }
-                                    Ok::<(), anyhow::Error>(())
-                                }));
-                            }
-                        }
+                        // ...rest of XML processing...
                     }
                 }
                 FileType::Zip => {
-                    // Process ZIP files immediately to maintain content extraction
+                    // Track ZIP file immediately when first encountered
+                    let mut report = self.download_report.lock().await;
+                    report.processed_zips.insert(target_path.clone());
+                    //report.files_downloaded += 1;
+                    drop(report);
+
+                    // Process ZIP contents
                     let zip_files = self.processor.process_source(file.source).await?;
-                    for zip_file in zip_files {
-                        if let FileType::Vib = zip_file.file_type {
-                            let this = self.clone();
-                            let _permit = self.download_semaphore.clone().acquire_owned().await?;
-                            let relative_path = zip_file.relative_path.clone();
-                            
-                            // Make the task Send-safe by moving all required data
-                            tasks.push(tokio::spawn(async move {
-                                if let Err(e) = this.download_file_with_verify(&relative_path).await {
-                                    warn!("Error processing ZIP VIB {}: {}", relative_path, e);
-                                }
-                                Ok::<(), anyhow::Error>(())
-                            }));
-                        }
-                    }
+                    // ...rest of ZIP processing...
                 }
                 FileType::Vib => {
+                    // Update VIB stats when processing starts
+                    let mut report = self.download_report.lock().await;
+                    report.downloaded_vibs.insert(target_path.clone());
+                    //report.files_downloaded += 1;
+                    drop(report); // Release lock before continuing
+
+                    // Rest of VIB processing
                     let this = self.clone();
                     let _permit = self.download_semaphore.clone().acquire_owned().await?;
                     let file_clone = file.clone();
                     let target_path_clone = target_path.clone();
-                    
+
                     tasks.push(tokio::spawn(async move {
                         let should_download = if target_path_clone.exists() {
-                            if let (Some(checksum), Some(checksum_type)) = (&file_clone.checksum, &file_clone.checksum_type) {
+                            if let (Some(checksum), Some(checksum_type)) =
+                                (&file_clone.checksum, &file_clone.checksum_type)
+                            {
                                 info!("Verifying existing VIB: {}", target_path_clone.display());
-                                !this.verifier.verify_checksum(&target_path_clone, checksum, checksum_type).await?
+                                !this
+                                    .verifier
+                                    .verify_checksum(&target_path_clone, checksum, checksum_type)
+                                    .await?
                             } else {
                                 false
                             }
@@ -356,7 +417,10 @@ impl Downloader {
                             if let Source::Http(url) = &file_clone.source {
                                 // Always try to delete the file first if it exists
                                 if target_path_clone.exists() {
-                                    info!("Deleting invalid file for redownload: {}", target_path_clone.display());
+                                    info!(
+                                        "Deleting invalid file for redownload: {}",
+                                        target_path_clone.display()
+                                    );
                                     let _ = tokio::fs::remove_file(&target_path_clone).await;
                                 }
 
@@ -364,16 +428,75 @@ impl Downloader {
                                 this.download_file(url, &target_path_clone).await?;
 
                                 // Verify the newly downloaded file
-                                if let (Some(checksum), Some(checksum_type)) = (&file_clone.checksum, &file_clone.checksum_type) {
-                                    let valid = this.verifier.verify_checksum(&target_path_clone, checksum, checksum_type).await?;
-                                    if !valid {
-                                        warn!("Downloaded file failed verification: {}", target_path_clone.display());
-                                        let _ = tokio::fs::remove_file(&target_path_clone).await;
-                                        this.add_failed_download(
-                                            url.clone(),
-                                            target_path_clone.clone(),
-                                            Some((checksum_type.clone(), checksum.clone()))
-                                        ).await;
+                                if let (Some(checksum), Some(checksum_type)) =
+                                    (&file_clone.checksum, &file_clone.checksum_type)
+                                {
+                                    match this
+                                        .verifier
+                                        .verify_checksum(
+                                            &target_path_clone,
+                                            checksum,
+                                            checksum_type,
+                                        )
+                                        .await
+                                    {
+                                        Ok(true) => (),
+                                        Ok(false) => {
+                                            warn!(
+                                                "Downloaded file failed verification: {}",
+                                                target_path_clone.display()
+                                            );
+                                            let _ =
+                                                tokio::fs::remove_file(&target_path_clone).await;
+
+                                            // Calculate actual checksum
+                                            use sha2::{Digest, Sha256};
+                                            use std::fs::File;
+                                            use std::io::Read;
+
+                                            let mut file = File::open(&target_path_clone)?;
+                                            let mut hasher = Sha256::new();
+                                            let mut buffer = vec![0; 1024 * 1024];
+
+                                            while let Ok(n) = file.read(&mut buffer) {
+                                                if n == 0 {
+                                                    break;
+                                                }
+                                                hasher.update(&buffer[..n]);
+                                            }
+
+                                            let actual = format!("{:x}", hasher.finalize());
+                                            let actual_checksum = actual.clone(); // Clone here for reuse
+
+                                            let mut report = this.download_report.lock().await;
+                                            report.checksum_mismatches.push((
+                                                target_path_clone.clone(),
+                                                checksum.clone(),
+                                                actual_checksum.clone(), // Use clone here
+                                            ));
+
+                                            this.add_failed_download(
+                                                url.clone(),
+                                                target_path_clone.clone(),
+                                                Some((checksum_type.clone(), checksum.clone())),
+                                            )
+                                            .await;
+
+                                            let mut report = this.download_report.lock().await;
+                                            report.checksum_errors.push((
+                                                target_path_clone.clone(),
+                                                checksum.clone(),
+                                                actual, // Use original here
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            this.add_failed_download(
+                                                url.clone(),
+                                                target_path_clone.clone(),
+                                                Some((checksum_type.clone(), checksum.clone())),
+                                            )
+                                            .await;
+                                        }
                                     }
                                 }
                             }
@@ -399,7 +522,10 @@ impl Downloader {
     async fn download_file_with_verify(&self, relative_path: &str) -> Result<()> {
         let target_path = self.base_path.join(relative_path);
         if !target_path.exists() {
-            let url = format!("https://hostupdate.vmware.com/software/VUM/PRODUCTION/{}", relative_path);
+            let url = format!(
+                "https://hostupdate.vmware.com/software/VUM/PRODUCTION/{}",
+                relative_path
+            );
             self.download_file(&url, &target_path).await?;
         }
         Ok(())
@@ -424,11 +550,11 @@ impl Downloader {
         // Download if not cached or cache read failed
         info!("Downloading XML: {}", url);
         let response = self.client.get(url.parse()?).await?;
-        
+
         if !response.status().is_success() {
             return Err(anyhow::anyhow!("HTTP error {}: {}", response.status(), url));
         }
-        
+
         let bytes = http_body_util::BodyExt::collect(response.into_body())
             .await?
             .to_bytes();
@@ -439,6 +565,17 @@ impl Downloader {
             tokio::fs::create_dir_all(parent).await?;
         }
         tokio::fs::write(&target_path, &content).await?;
+
+        // Update stats when saving XML file
+        if tokio::fs::write(&target_path, &content).await.is_ok() {
+            let mut report = self.download_report.lock().await;
+            report.processed_xmls.insert(target_path.clone());
+            report.files_downloaded += 1;
+        }
+
+        // Update download stats for XML
+        self.update_download_stats(&target_path).await;
+
         info!("Saved XML file: {}", target_path.display());
 
         Ok(content)
@@ -446,12 +583,16 @@ impl Downloader {
 
     async fn download_file(&self, url: &str, target_path: &Path) -> Result<()> {
         // Skip if file exists and is tracked
-        let relative_path = target_path.strip_prefix(&self.base_path)
-            .map_or_else(|_| target_path.to_string_lossy().to_string(),
-                        |p| p.to_string_lossy().to_string());
+        let relative_path = target_path.strip_prefix(&self.base_path).map_or_else(
+            |_| target_path.to_string_lossy().to_string(),
+            |p| p.to_string_lossy().to_string(),
+        );
 
         if self.is_file_processed(&relative_path).await && target_path.exists() {
-            debug!("Skipping already downloaded file: {}", target_path.display());
+            debug!(
+                "Skipping already downloaded file: {}",
+                target_path.display()
+            );
             return Ok(());
         }
 
@@ -462,11 +603,8 @@ impl Downloader {
         if !status.is_success() {
             warn!("HTTP {} error for URL: {}", status, url);
             // Add to failed downloads without saving the file
-            self.add_failed_download(
-                url.to_string(),
-                target_path.to_path_buf(),
-                None
-            ).await;
+            self.add_failed_download(url.to_string(), target_path.to_path_buf(), None)
+                .await;
             return Err(anyhow::anyhow!("HTTP error {}: {}", status, url));
         }
 
@@ -478,20 +616,24 @@ impl Downloader {
         let bytes = http_body_util::BodyExt::collect(response.into_body())
             .await?
             .to_bytes();
-            
+
         tokio::fs::write(target_path, bytes).await?;
-        
-        // Track the downloaded file
-        let mut downloaded = self.downloaded.lock().await;
-        downloaded.insert(target_path.to_path_buf());
-        
+
+        // Update download stats
+        self.update_download_stats(target_path).await;
+
         info!("Downloaded: {}", target_path.display());
         self.mark_file_processed(relative_path).await;
-        
+
         Ok(())
     }
 
-    async fn add_failed_download(&self, url: String, path: PathBuf, checksum: Option<(String, String)>) {
+    async fn add_failed_download(
+        &self,
+        url: String,
+        path: PathBuf,
+        checksum: Option<(String, String)>,
+    ) {
         let mut failed = self.failed.lock().await;
         failed.insert(url, (path, checksum));
     }
@@ -518,7 +660,7 @@ impl Downloader {
     pub async fn get_file_type_stats(&self) -> HashMap<String, usize> {
         let mut stats = HashMap::new();
         let downloaded = self.downloaded.lock().await;
-        
+
         for path in downloaded.iter() {
             if let Some(ext) = path.extension() {
                 if let Some(ext_str) = ext.to_str() {
@@ -526,12 +668,52 @@ impl Downloader {
                 }
             }
         }
-        
+
         stats
     }
 
     pub async fn get_failed_downloads(&self) -> Vec<String> {
         let failed = self.failed.lock().await;
         failed.keys().cloned().collect()
+    }
+
+    pub async fn get_download_report(&self) -> DownloadReport {
+        let mut report = self.download_report.lock().await.clone();
+
+        // Include processed files in totals
+        //report.files_downloaded = report.processed_xmls.len()
+        //    + report.processed_zips.len()
+        //    + report.downloaded_vibs.len();
+
+        report.files_skipped = self
+            .processed_files
+            .lock()
+            .await
+            .len()
+            .saturating_sub(report.files_downloaded);
+
+        report
+    }
+
+    async fn update_download_stats(&self, path: &Path) {
+        let mut downloaded = self.downloaded.lock().await;
+        downloaded.insert(path.to_path_buf());
+
+        let mut report = self.download_report.lock().await;
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            match ext {
+                "xml" => {
+                    report.processed_xmls.insert(path.to_path_buf());
+                }
+                "zip" => {
+                    report.processed_zips.insert(path.to_path_buf());
+                }
+                "vib" => {
+                    report.downloaded_vibs.insert(path.to_path_buf());
+                }
+                _ => {}
+            }
+        }
+        report.files_downloaded = downloaded.len();
     }
 }

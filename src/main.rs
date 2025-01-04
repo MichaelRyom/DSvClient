@@ -1,22 +1,22 @@
 #![allow(unused)]
 // Version 0.1.1
 use anyhow::Result;
-use std::path::PathBuf;
-use log::{LevelFilter, warn, info, error};
-use simplelog::{WriteLogger, CombinedLogger, TermLogger, Config, TerminalMode, ColorChoice};
-use std::fs::File;
-use hyper_util::client::legacy::{Client, connect::HttpConnector};
-use hyper_tls::HttpsConnector;
-use http_body_util::Empty;
 use bytes::Bytes;
+use http_body_util::Empty;
+use hyper_tls::HttpsConnector;
+use hyper_util::client::legacy::{connect::HttpConnector, Client};
+use log::{error, info, warn, LevelFilter};
+use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode, WriteLogger};
+use std::fs::File;
+use std::path::PathBuf;
 
+mod config;
 mod downloader;
 mod parser;
-mod verify;
 mod process;
-mod config;
+mod verify;
 
-use crate::config::AppConfig;  // Use renamed import
+use crate::config::AppConfig; // Use renamed import
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -24,12 +24,13 @@ async fn main() -> Result<()> {
     let config = AppConfig::load_or_default();
 
     let args: Vec<String> = std::env::args().collect();
-    
+
     // Check for --verify flag but exclude it from being treated as a path
     let verify = args.iter().any(|arg| arg == "--verify");
-    
+
     // Get the download path by finding the first argument that isn't --verify
-    let download_path = args.iter()
+    let download_path = args
+        .iter()
         .skip(1) // Skip program name
         .find(|arg| *arg != "--verify")
         .map(|path| PathBuf::from(path))
@@ -40,13 +41,13 @@ async fn main() -> Result<()> {
 
     info!("Using download path: {}", download_path.display());
     std::fs::create_dir_all(&download_path)?;
-    
+
     // Check for sources.toml instead of sources
     if !PathBuf::from("sources.toml").exists() {
         error!("sources.toml file not found");
         std::process::exit(1);
     }
-    
+
     // Set up logging
     let log_file = File::create(download_path.join("download_errors.log"))?;
     CombinedLogger::init(vec![
@@ -56,30 +57,27 @@ async fn main() -> Result<()> {
             TerminalMode::Mixed,
             ColorChoice::Auto,
         ),
-        WriteLogger::new(
-            LevelFilter::Warn,
-            Config::default(),
-            log_file,
-        ),
+        WriteLogger::new(LevelFilter::Warn, Config::default(), log_file),
     ])?;
 
     let https = HttpsConnector::new();
-    let client = Client::builder(hyper_util::rt::TokioExecutor::new())
-        .build::<_, Empty<Bytes>>(https);
+    let client =
+        Client::builder(hyper_util::rt::TokioExecutor::new()).build::<_, Empty<Bytes>>(https);
     let service = downloader::Downloader::new(
-        download_path.clone(), 
+        download_path.clone(),
         client,
-        config.clone()  // Pass config to Downloader
+        config.clone(), // Pass config to Downloader
     );
-    
+
     if verify {
         info!("Starting verification process...");
         match verify::verify_directory(&download_path).await {
             Ok(report) => {
                 report.print_summary();
-                if !report.vib_files_missing.is_empty() || 
-                   !report.checksum_mismatches.is_empty() ||
-                   !report.error_files.is_empty() {
+                if !report.vib_files_missing.is_empty()
+                    || !report.checksum_mismatches.is_empty()
+                    || !report.error_files.is_empty()
+                {
                     std::process::exit(1);
                 }
                 info!("\nAll files verified successfully!");
@@ -99,25 +97,31 @@ async fn main() -> Result<()> {
         if let Err(e) = service.retry_failed_downloads().await {
             warn!("Errors occurred during retry attempts: {}", e);
         }
-        
+
         // Get and display file type statistics
-        let stats = service.get_file_type_stats().await;  // Add .await
+        /*let stats = service.get_file_type_stats().await; // Add .await
         info!("\nFile format summary:");
-        for (ext, count) in stats.into_iter() {  // Use into_iter() on the HashMap
+        for (ext, count) in stats.into_iter() {
+            // Use into_iter() on the HashMap
             info!("  {}: {} files", ext, count);
-        }
-        
+        }*/
+
         // Summarize files not downloaded
-        let failed_downloads = service.get_failed_downloads().await;  // Add .await
+        let failed_downloads = service.get_failed_downloads().await; // Add .await
         if !failed_downloads.is_empty() {
             warn!("\nSummary of files not downloaded:");
-            for url in failed_downloads.into_iter() {  // Use into_iter() on the Vec
+            for url in failed_downloads.into_iter() {
+                // Use into_iter() on the Vec
                 warn!("  {}", url);
             }
         } else {
             info!("\nAll files downloaded successfully.");
         }
+
+        // Get and display download report
+        let report = service.get_download_report().await;
+        report.print_summary();
     }
-    
+
     Ok(())
 }
