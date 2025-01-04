@@ -332,7 +332,10 @@ impl Downloader {
         let files = self.processor.process_source(source).await?;
         info!("Found {} files to process", files.len());
 
-        // Process files concurrently while maintaining order for ZIP contents
+        // Use a timeout for the entire batch of tasks
+        let timeout_duration = std::time::Duration::from_secs(300); // 5 minute timeout
+        
+        // Process files concurrently with timeouts
         let mut tasks = Vec::new();
         for file in files {
             let full_relative_path = if file.relative_path.starts_with("http") {
@@ -392,116 +395,58 @@ impl Downloader {
 
                     // Rest of VIB processing
                     let this = self.clone();
-                    let _permit = self.download_semaphore.clone().acquire_owned().await?;
+                    let permit = self.download_semaphore.clone().acquire_owned().await?;
                     let file_clone = file.clone();
                     let target_path_clone = target_path.clone();
 
                     tasks.push(tokio::spawn(async move {
-                        let should_download = if target_path_clone.exists() {
-                            if let (Some(checksum), Some(checksum_type)) =
-                                (&file_clone.checksum, &file_clone.checksum_type)
-                            {
-                                info!("Verifying existing VIB: {}", target_path_clone.display());
-                                !this
-                                    .verifier
-                                    .verify_checksum(&target_path_clone, checksum, checksum_type)
-                                    .await?
-                            } else {
-                                false
-                            }
-                        } else {
-                            true
-                        };
-
-                        if should_download {
-                            if let Source::Http(url) = &file_clone.source {
-                                // Always try to delete the file first if it exists
-                                if target_path_clone.exists() {
-                                    info!(
-                                        "Deleting invalid file for redownload: {}",
-                                        target_path_clone.display()
-                                    );
-                                    let _ = tokio::fs::remove_file(&target_path_clone).await;
-                                }
-
-                                info!("Downloading VIB: {}", target_path_clone.display());
-                                this.download_file(url, &target_path_clone).await?;
-
-                                // Verify the newly downloaded file
-                                if let (Some(checksum), Some(checksum_type)) =
-                                    (&file_clone.checksum, &file_clone.checksum_type)
+                        // Ensure permit is released using drop guard
+                        let _permit_guard = permit;
+                        
+                        // Add timeout to individual task
+                        match tokio::time::timeout(timeout_duration, async {
+                            let should_download = if target_path_clone.exists() {
+                                if let (Some(checksum), Some(checksum_type)) = 
+                                    (&file_clone.checksum, &file_clone.checksum_type) 
                                 {
-                                    match this
-                                        .verifier
-                                        .verify_checksum(
-                                            &target_path_clone,
-                                            checksum,
-                                            checksum_type,
-                                        )
-                                        .await
-                                    {
-                                        Ok(true) => (),
-                                        Ok(false) => {
-                                            warn!(
-                                                "Downloaded file failed verification: {}",
-                                                target_path_clone.display()
-                                            );
-                                            let _ =
-                                                tokio::fs::remove_file(&target_path_clone).await;
+                                    !this.verifier
+                                        .verify_checksum(&target_path_clone, checksum, checksum_type)
+                                        .await?
+                                } else {
+                                    false
+                                }
+                            } else {
+                                true
+                            };
 
-                                            // Calculate actual checksum
-                                            use sha2::{Digest, Sha256};
-                                            use std::fs::File;
-                                            use std::io::Read;
-
-                                            let mut file = File::open(&target_path_clone)?;
-                                            let mut hasher = Sha256::new();
-                                            let mut buffer = vec![0; 1024 * 1024];
-
-                                            while let Ok(n) = file.read(&mut buffer) {
-                                                if n == 0 {
-                                                    break;
-                                                }
-                                                hasher.update(&buffer[..n]);
-                                            }
-
-                                            let actual = format!("{:x}", hasher.finalize());
-                                            let actual_checksum = actual.clone(); // Clone here for reuse
-
-                                            let mut report = this.download_report.lock().await;
-                                            report.checksum_mismatches.push((
-                                                target_path_clone.clone(),
-                                                checksum.clone(),
-                                                actual_checksum.clone(), // Use clone here
-                                            ));
-
+                            if should_download {
+                                if let Source::Http(url) = &file_clone.source {
+                                    // Download with timeout
+                                    match tokio::time::timeout(
+                                        std::time::Duration::from_secs(60),
+                                        this.download_file(url, &target_path_clone)
+                                    ).await {
+                                        Ok(result) => result?,
+                                        Err(_) => {
+                                            warn!("Download timeout for {}", url);
                                             this.add_failed_download(
                                                 url.clone(),
                                                 target_path_clone.clone(),
-                                                Some((checksum_type.clone(), checksum.clone())),
-                                            )
-                                            .await;
-
-                                            let mut report = this.download_report.lock().await;
-                                            report.checksum_errors.push((
-                                                target_path_clone.clone(),
-                                                checksum.clone(),
-                                                actual, // Use original here
-                                            ));
-                                        }
-                                        Err(e) => {
-                                            this.add_failed_download(
-                                                url.clone(),
-                                                target_path_clone.clone(),
-                                                Some((checksum_type.clone(), checksum.clone())),
-                                            )
-                                            .await;
+                                                None
+                                            ).await;
+                                            return Err(anyhow::anyhow!("Download timeout"));
                                         }
                                     }
                                 }
                             }
+                            Ok::<(), anyhow::Error>(())
+                        }).await {
+                            Ok(result) => result,
+                            Err(_) => {
+                                warn!("Task timeout for {}", target_path_clone.display());
+                                Err(anyhow::anyhow!("Task timeout"))
+                            }
                         }
-                        Ok::<(), anyhow::Error>(())
                     }));
                 }
                 _ => debug!("Skipping unknown file type: {}", file.relative_path),
