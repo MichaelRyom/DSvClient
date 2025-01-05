@@ -27,37 +27,30 @@ pub struct DownloadReport {
     pub files_downloaded: usize,
     pub files_skipped: usize,
     pub failed_downloads: Vec<String>,
+    pub processed_files: usize,
     pub processed_xmls: HashSet<PathBuf>,
     pub processed_zips: HashSet<PathBuf>,
     pub downloaded_vibs: HashSet<PathBuf>,
-    pub checksum_errors: Vec<(PathBuf, String, String)>, // (path, expected, actual)
     pub checksum_mismatches: Vec<(PathBuf, String, String)>, // (path, expected, actual)
+    pub access_errors: Vec<(PathBuf, String)>, // Add new field for access errors
+    pub files_missing: Vec<PathBuf>, // Add new field for missing files
+    pub total_xml_processed: usize,  // Add counter for total XML files found
+    pub total_zip_processed: usize,  // Add counter for total ZIP files found
+    pub total_vib_processed: usize,  // Add counter for total VIB files found
 }
 
 impl DownloadReport {
     pub fn print_summary(&self) {
         info!("\nDownload Summary:");
 
-        if !self.failed_downloads.is_empty() {
+        if (!self.failed_downloads.is_empty()) {
             warn!("\nFailed Downloads ({}):", self.failed_downloads.len());
             for url in &self.failed_downloads {
                 warn!("  {}", url);
             }
         }
 
-        if !self.checksum_errors.is_empty() {
-            warn!("\nChecksum Errors ({}):", self.checksum_errors.len());
-            for (path, expected, actual) in &self.checksum_errors {
-                warn!(
-                    "  {}: expected {} but got {}",
-                    path.display(),
-                    expected,
-                    actual
-                );
-            }
-        }
-
-        if !self.checksum_mismatches.is_empty() {
+        if (!self.checksum_mismatches.is_empty()) {
             warn!(
                 "\nChecksum Mismatches ({}):",
                 self.checksum_mismatches.len()
@@ -72,17 +65,31 @@ impl DownloadReport {
             }
         }
 
-        info!("XML files processed: {}", self.processed_xmls.len());
-        info!("ZIP files processed: {}", self.processed_zips.len());
-        info!("VIB files downloaded: {}", self.downloaded_vibs.len());
+        if (!self.access_errors.is_empty()) {
+            warn!("\nAccess Errors ({}):", self.access_errors.len());
+            for (path, error) in &self.access_errors {
+                warn!("  {}: {}", path.display(), error);
+            }
+        }
+
+        if (!self.files_missing.is_empty()) {
+            warn!("\nMissing Files ({}):", self.files_missing.len());
+            for path in &self.files_missing {
+                warn!("  {}", path.display());
+            }
+        }
+
+        info!("XML files processed: {}", self.total_xml_processed);
+        info!("ZIP files processed: {}", self.total_zip_processed);
+        info!("VIB files checked: {}", self.total_vib_processed);
         info!("Total files downloaded: {}", self.files_downloaded);
-        info!("Total downloads failed: {}", self.failed_downloads.len());
-        info!("Files skipped: {}", self.files_skipped);
-        info!(
-            "Files with checksum mismatches: {}",
-            self.checksum_mismatches.len()
-        );
-        info!("Files with checksum errors: {}", self.checksum_errors.len());
+        info!("Total files checked: {}", self.processed_files);
+        // Calculate skipped files correctly
+        let total_processed = self.total_xml_processed + self.total_zip_processed + self.total_vib_processed;
+        info!("Files skipped: {}", total_processed.saturating_sub(self.files_downloaded));
+        info!("Files missing on disk: {}", self.files_missing.len());
+        info!("Files with checksum mismatches: {}",self.checksum_mismatches.len());
+        info!("Files with access errors: {}", self.access_errors.len());
     }
 }
 
@@ -289,7 +296,7 @@ impl Downloader {
 
 /*     pub async fn process_sources_file(&self) -> Result<()> {
         let sources_file = PathBuf::from("sources"); // Changed to look in current dir
-        if !sources_file.exists() {
+        if (!sources_file.exists()) {
             warn!("Sources file not found: {}", sources_file.display());
             return Ok(());
         }
@@ -329,6 +336,46 @@ impl Downloader {
         let files = self.processor.process_source(source).await?;
         info!("Found {} files to process", files.len());
 
+        // Update total files to process
+        let mut report = self.download_report.lock().await;
+        report.processed_files += files.len();
+        drop(report);
+
+        // Reset counters at start of processing
+        {
+            let mut report = self.download_report.lock().await;
+            report.total_xml_processed = 0;
+            report.total_zip_processed = 0;
+            report.total_vib_processed = 0;
+        }
+
+        // Count and track files before processing
+        {
+            let mut report = self.download_report.lock().await;
+            for file in &files {
+                match file.file_type {
+                    FileType::Xml => {
+                        report.total_xml_processed += 1;
+                    }
+                    FileType::Zip => {
+                        report.total_zip_processed += 1;
+                    }
+                    FileType::Vib => {
+                        let target = self.base_path.join(&file.relative_path);
+                        if !target.exists() {
+                            // Use add_missing_file instead of direct push
+                            drop(report); // Drop the lock before the async call
+                            self.add_missing_file(target).await;
+                            report = self.download_report.lock().await; // Re-acquire lock
+                        }
+                        report.total_vib_processed += 1;
+                    }
+                    _ => {}
+                }
+            }
+            report.processed_files = report.total_xml_processed + report.total_zip_processed + report.total_vib_processed;
+        }
+
         // Use a timeout for the entire batch of tasks
         let timeout_duration = std::time::Duration::from_secs(300); // 5 minute timeout
         
@@ -354,6 +401,7 @@ impl Downloader {
             // Mark as processed before starting work
             self.mark_file_processed(full_relative_path.clone()).await;
 
+            // Create target path
             let target_path = self.base_path.join(&full_relative_path);
             info!("Target path: {}", target_path.display());
 
@@ -362,31 +410,45 @@ impl Downloader {
                     // Track XML file immediately when first encountered
                     let mut report = self.download_report.lock().await;
                     report.processed_xmls.insert(target_path.clone());
-                    //report.files_downloaded += 1;
-                    drop(report);
-
-/*                     // Process XML contents
-                    if let Source::Path(xml_path) = &file.source {
-                        //let content = tokio::fs::read_to_string(xml_path).await?;
-                        //let parser = DepotParser::new(&content);
-                        // ...rest of XML processing...
+/*                     if !target_path.exists() {
+                        report.files_downloaded += 1;
                     } */
+                    drop(report);
+                    
+                    // Process the XML file
+                    let this = self.clone();
+                    let target_path_clone = target_path.clone();
+                    if let Source::Http(url) = &file.source {
+                        if let Err(e) = this.download_file(url, &target_path_clone).await {
+                            warn!("Failed to download XML {}: {}", url, e);
+                        }
+                    }
                 }
                 FileType::Zip => {
                     // Track ZIP file immediately when first encountered
                     let mut report = self.download_report.lock().await;
                     report.processed_zips.insert(target_path.clone());
-                    //report.files_downloaded += 1;
+/*                     if !target_path.exists() {
+                        report.files_downloaded += 1;
+                    } */
                     drop(report);
 
-                    // Process ZIP contents
-                    //let zip_files = self.processor.process_source(file.source).await?;
-                    // ...rest of ZIP processing...
+                    // Process the ZIP file
+                    let this = self.clone();
+                    let target_path_clone = target_path.clone();
+                    if let Source::Http(url) = &file.source {
+                        if let Err(e) = this.download_file(url, &target_path_clone).await {
+                            warn!("Failed to download ZIP {}: {}", url, e);
+                        }
+                    }
                 }
                 FileType::Vib => {
-                    // Update VIB stats when processing starts
+                    // Track VIB file immediately when first encountered
                     let mut report = self.download_report.lock().await;
                     report.downloaded_vibs.insert(target_path.clone());
+/*                     if !target_path.exists() {
+                        report.files_downloaded += 1;
+                    } */
                     drop(report);
 
                     let this = self.clone();
@@ -411,15 +473,26 @@ impl Downloader {
                                         Ok(false) => {
                                             info!("Checksum mismatch for {}, will redownload", 
                                                 target_path_clone.display());
+                                            this.add_checksum_mismatch(
+                                                &target_path_clone,
+                                                checksum,
+                                                "failed_verification"
+                                            ).await;
                                             // Delete invalid file
                                             if let Err(e) = tokio::fs::remove_file(&target_path_clone).await {
                                                 warn!("Failed to delete invalid file: {}", e);
+                                                this.add_access_error(&target_path_clone, e.to_string()).await;
                                             }
                                             true
                                         }
                                         Err(e) => {
                                             warn!("Checksum verification failed: {}", e);
-                                            true
+                                            this.add_access_error(&target_path_clone, e.to_string()).await;
+                                            if e.to_string().contains("Access is denied") {
+                                                false // Don't try to redownload if we don't have access
+                                            } else {
+                                                true
+                                            }
                                         }
                                     }
                                 } else {
@@ -485,8 +558,9 @@ impl Downloader {
                             }
                         }).await {
                             Ok(result) => result,
-                            Err(_) => {
+                            Err(e) => {
                                 warn!("Task timeout for {}", target_path_clone.display());
+                                this.add_access_error(&target_path_clone, format!("Task timeout: {}", e)).await;
                                 Err(anyhow::anyhow!("Task timeout"))
                             }
                         }
@@ -498,8 +572,10 @@ impl Downloader {
 
         // Wait for all tasks to complete
         for result in join_all(tasks).await {
-            if let Err(e) = result? {
-                warn!("Task error: {}", e);
+            match result {
+                Ok(Ok(())) => (),
+                Ok(Err(e)) => warn!("Task error: {}", e),
+                Err(e) => warn!("Task join error: {}", e),
             }
         }
 
@@ -509,7 +585,7 @@ impl Downloader {
 /*     // Add new helper method to handle download and verification
     async fn download_file_with_verify(&self, relative_path: &str) -> Result<()> {
         let target_path = self.base_path.join(relative_path);
-        if !target_path.exists() {
+        if (!target_path.exists()) {
             let url = format!(
                 "https://hostupdate.vmware.com/software/VUM/PRODUCTION/{}",
                 relative_path
@@ -539,7 +615,7 @@ impl Downloader {
         info!("Downloading XML: {}", url);
         let response = self.client.get(url.parse()?).await?;
 
-        if !response.status().is_success() {
+        if (!response.status().is_success()) {
             return Err(anyhow::anyhow!("HTTP error {}: {}", response.status(), url));
         }
 
@@ -558,7 +634,7 @@ impl Downloader {
         if tokio::fs::write(&target_path, &content).await.is_ok() {
             let mut report = self.download_report.lock().await;
             report.processed_xmls.insert(target_path.clone());
-            report.files_downloaded += 1;
+            report.processed_files += 1;
         }
 
         // Update download stats for XML
@@ -588,7 +664,7 @@ impl Downloader {
         let status = response.status();
 
         // Check status code before proceeding
-        if !status.is_success() {
+        if (!status.is_success()) {
             warn!("HTTP {} error for URL: {}", status, url);
             // Add to failed downloads without saving the file
             self.add_failed_download(url.to_string(), target_path.to_path_buf(), None)
@@ -607,6 +683,12 @@ impl Downloader {
 
         tokio::fs::write(target_path, bytes).await?;
 
+/*         // Only update downloaded count for new files
+        if !target_path.exists() {
+            let mut report = self.download_report.lock().await;
+            report.files_downloaded += 1;
+        } */
+
         // Update download stats
         self.update_download_stats(target_path).await;
 
@@ -622,7 +704,7 @@ impl Downloader {
         path: PathBuf,
         checksum: Option<(String, String)>,
     ) {
-        let mut failed = self.failed.lock().await;
+        let mut failed: tokio::sync::MutexGuard<'_, HashMap<String, (PathBuf, Option<(String, String)>)>> = self.failed.lock().await;
         failed.insert(url, (path, checksum));
     }
 
@@ -702,7 +784,10 @@ impl Downloader {
                 _ => {}
             }
         }
-        report.files_downloaded = downloaded.len();
+        // Only update download count for new files
+        if !path.exists() {
+            report.files_downloaded += 1;
+        }
     }
 
     // Add helper method for tracking checksum mismatches
@@ -713,5 +798,15 @@ impl Downloader {
             expected.to_string(),
             actual.to_string()
         ));
+    }
+
+    async fn add_access_error(&self, path: &Path, error: String) {
+        let mut report = self.download_report.lock().await;
+        report.access_errors.push((path.to_path_buf(), error));
+    }
+
+    async fn add_missing_file(&self, path: PathBuf) {
+        let mut report = self.download_report.lock().await;
+        report.files_missing.push(path);
     }
 }
