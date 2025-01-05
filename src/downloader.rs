@@ -1,4 +1,3 @@
-#![allow(unused)]
 use crate::config::AppConfig;
 use crate::parser::{AddonMetadata, AddonPackage, DepotParser, Vendor, VmwarePackage, XmlParser}; // Add VmwarePackage, AddonPackage, and AddonMetadata to imports
 use crate::process::{FileType, ProcessManager, Source};

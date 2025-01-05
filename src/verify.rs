@@ -1,4 +1,3 @@
-#![allow(unused)]
 use anyhow::Result;
 use log::{info, warn, error, debug};
 use sha2::{Sha256, Digest};
@@ -69,7 +68,7 @@ impl VerificationReport {
 
         info!("XML files processed: {}", self.processed_xmls.len());
         info!("ZIP files processed: {}", self.processed_zips.len());
-        info!("Total VIB files verified: {}", self.files_checked);
+        info!("Total VIB files checked: {}", self.files_checked);
         info!("Total VIB files missing: {}", self.vib_files_missing.len());
         info!("Files with checksum mismatches: {}", self.checksum_mismatches.len());
         info!("Files with errors: {}", self.error_files.len());
@@ -289,12 +288,23 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
     let checksums = vib_checksums.lock().await;
     
     for (vib_path, checksum_info) in checksums.iter() {
-        if let Some((checksum, checksum_type)) = checksum_info {
-            report.increment_checked().await;  // <--- Added
-            match verifier.verify_checksum(vib_path, checksum, checksum_type).await {
-                Ok(true) => (),
-                Ok(false) => report.add_mismatch(vib_path.clone(), checksum.clone()).await,
-                Err(e) => report.add_error(vib_path.clone(), format!("Verification failed: {}", e)).await,
+        // Check if file exists
+        match tokio::fs::metadata(vib_path).await {
+            Ok(_) => {
+                if let Some((checksum, checksum_type)) = checksum_info {
+                    report.increment_checked().await;
+                    match verifier.verify_checksum(vib_path, checksum, checksum_type).await {
+                        Ok(true) => (),
+                        Ok(false) => report.add_mismatch(vib_path.clone(), checksum.clone()).await,
+                        Err(e) => report.add_error(vib_path.clone(), format!("Verification failed: {}", e)).await,
+                    }
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                report.add_missing(vib_path.clone()).await;
+            },
+            Err(e) => {
+                report.add_error(vib_path.clone(), format!("Cannot access file: {}", e)).await;
             }
         }
     }
@@ -316,11 +326,18 @@ pub async fn verify_vib_file(
         }
     };
 
-    // Early return if file doesn't exist
-    if !vib_path.exists() {
-        report.add_missing(vib_path).await;
-        return Ok(());
-    }
+    // Early return if file doesn't exist or can't be accessed
+    match tokio::fs::metadata(&vib_path).await {
+        Ok(_) => (),
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                report.add_missing(vib_path).await;
+            } else {
+                report.add_error(vib_path, format!("Cannot access file: {}", e)).await;
+            }
+            return Ok(());
+        }
+    } 
 
     // Only proceed with verification if we have checksum info
     if let (Some(checksum), Some(checksum_type)) = (&file_info.checksum, &file_info.checksum_type) {

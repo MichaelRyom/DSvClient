@@ -1,4 +1,3 @@
-#![allow(unused)]
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use anyhow::Result;  // Add this import

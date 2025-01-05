@@ -1,5 +1,3 @@
-#![allow(unused)]
-// Version 0.1.1
 use anyhow::Result;
 use bytes::Bytes;
 use http_body_util::Empty;
