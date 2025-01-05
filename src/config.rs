@@ -1,5 +1,4 @@
 use serde::Deserialize;
-use std::path::PathBuf;
 use std::fs;
 use anyhow::Result;
 
@@ -7,26 +6,26 @@ use anyhow::Result;
 pub struct Config {
     pub verification: VerificationConfig,
     pub download: DownloadConfig,
-    pub general: GeneralConfig,
+    //pub general: GeneralConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct VerificationConfig {
     pub chunk_size: usize,
-    pub max_concurrent_files: usize,
+    //pub max_concurrent_files: usize,
     pub max_concurrent_verifications: usize,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct DownloadConfig {
     pub max_concurrent_downloads: usize,
-    pub buffer_size: usize,
+    //pub buffer_size: usize,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+/* #[derive(Debug, Deserialize, Clone)]
 pub struct GeneralConfig {
     pub thread_sleep_ms: u64,
-}
+} */
 
 impl Config {
     pub fn load() -> Result<Self> {
@@ -44,16 +43,16 @@ impl Default for Config {
         Self {
             verification: VerificationConfig {
                 chunk_size: 256 * 1024,
-                max_concurrent_files: 1000,
+                //max_concurrent_files: 1000,
                 max_concurrent_verifications: num_cpus::get() * 4,
             },
             download: DownloadConfig {
                 max_concurrent_downloads: 10,
-                buffer_size: 8 * 1024 * 1024,
+                //buffer_size: 8 * 1024 * 1024,
             },
-            general: GeneralConfig {
+/*             general: GeneralConfig {
                 thread_sleep_ms: 0,
-            },
+            }, */
         }
     }
 }

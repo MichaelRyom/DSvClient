@@ -1,10 +1,10 @@
 use anyhow::Result;
-use log::{info, warn, error, debug};
+use log::{info, warn, error};
 use sha2::{Sha256, Digest};
 use std::path::{Path, PathBuf};
 use std::collections::HashSet;
 use tokio::fs;
-use tokio::io::{AsyncReadExt, BufReader};
+//use tokio::io::AsyncReadExt;
 use crate::process::{ProcessManager, Source, FileType};
 use hyper_util::client::legacy::Client;
 use hyper_tls::HttpsConnector;
@@ -12,24 +12,18 @@ use http_body_util::Empty;
 use bytes::Bytes;
 use tokio::sync::Semaphore;
 use std::sync::Arc;
-use rayon::ThreadPoolBuilder;
+//use rayon::ThreadPoolBuilder;
 use tokio::task;
-use std::time::Duration;
-use tokio::time::sleep;
-use std::sync::Mutex;
 use tokio::sync::Mutex as TokioMutex;
 use std::collections::HashMap;
-use crate::Config;
 use crate::config::AppConfig;  // Use renamed import
-use simplelog::Config as LogConfig;  // Rename conflicting imports
-use quick_xml::reader::Config as XmlConfig;
-use zip::read::Config as ZipConfig;
+  // Rename conflicting imports
 
 
 // Increase parallelism and optimize buffer sizes
-const VERIFICATION_CHUNK_SIZE: usize = 256 * 1024; // 256KB is optimal for most filesystems
+//const VERIFICATION_CHUNK_SIZE: usize = 256 * 1024; // 256KB is optimal for most filesystems
 const MAX_CONCURRENT_FILES: usize = 1000; // Process many files simultaneously
-const THREAD_SLEEP_MS: u64 = 0; // Remove artificial delay
+//const THREAD_SLEEP_MS: u64 = 0; // Remove artificial delay
 
 #[derive(Debug, Default)]
 pub struct VerificationReport {
@@ -127,7 +121,7 @@ impl AsyncReport {
 }
 
 pub struct VerificationManager {
-    thread_pool: Arc<rayon::ThreadPool>,
+    //thread_pool: Arc<rayon::ThreadPool>,
     semaphore: Arc<Semaphore>,
     config: Arc<AppConfig>,  // Use AppConfig instead of Config
 }
@@ -138,13 +132,13 @@ impl VerificationManager {
     }
 
     pub fn new_with_concurrency(concurrent_verifications: usize, config: AppConfig) -> Self {
-        let thread_pool = ThreadPoolBuilder::new()
+        /* let thread_pool = ThreadPoolBuilder::new()
             .num_threads(concurrent_verifications)
             .build()
-            .unwrap();
+            .unwrap(); */
 
         Self {
-            thread_pool: Arc::new(thread_pool),
+            //thread_pool: Arc::new(thread_pool),
             semaphore: Arc::new(Semaphore::new(concurrent_verifications)),
             config: Arc::new(config),  // Initialize config
         }
@@ -257,7 +251,7 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
         let source_clone = source.clone();
         let processor = processor.clone();
         let checksums = vib_checksums.clone();
-        let path = path.to_path_buf();
+        //let path = path.to_path_buf();
 
         tasks.push(tokio::spawn(async move {
             let _permit = permit;
@@ -312,7 +306,7 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
     Ok(())
 }
 
-pub async fn verify_vib_file(
+/* pub async fn verify_vib_file(
     manager: &VerificationManager,
     file_info: crate::process::FileInfo,  // Take ownership instead of borrowing
     base_path: &Path,
@@ -355,9 +349,9 @@ pub async fn verify_vib_file(
 
     Ok(())
 
-}
+} */
 
-pub fn verify_files(files: &[String]) -> Result<(), String> {
+/* pub fn verify_files(files: &[String]) -> Result<(), String> {
     let expected_count = files.len();
     let verified_count = 0; // replace with real logic
     println!(
@@ -365,4 +359,4 @@ pub fn verify_files(files: &[String]) -> Result<(), String> {
         verified_count, expected_count
     );
     Ok(())
-}
+} */

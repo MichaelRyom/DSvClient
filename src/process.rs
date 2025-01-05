@@ -2,15 +2,15 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use crate::parser::{DepotParser, XmlParser, Vendor}; // Add Vendor to imports
-use std::collections::{HashSet, HashMap};
-use hyper::{Request, StatusCode};
+use crate::parser::DepotParser;
+use std::collections::HashSet;
+use hyper::Request;
 use hyper_util::client::legacy::Client;
 use hyper_tls::HttpsConnector;
 use http_body_util::{BodyExt, Empty};
 use bytes::Bytes;
-use log::{info, warn, debug, error};
-use tokio::io::AsyncReadExt;
+use log::{info, debug, error};
+//use tokio::io::AsyncReadExt;
 use zip::ZipArchive;
 use std::io::Read;
 use std::sync::Arc;
@@ -31,7 +31,7 @@ pub struct FileInfo {
     pub checksum: Option<String>,
     pub checksum_type: Option<String>,
     pub file_type: FileType,
-    pub size: Option<u64>,
+    //pub size: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -236,7 +236,7 @@ impl ProcessManager {
                     checksum: None,
                     checksum_type: None,
                     file_type: FileType::Xml,
-                    size: None,
+                    //size: None,
                 });
             }
         }
@@ -259,7 +259,7 @@ impl ProcessManager {
                         } else { 
                             FileType::Other(url) 
                         },
-                        size: None,
+                        //size: None,
                     });
                 }
             }
@@ -277,7 +277,7 @@ impl ProcessManager {
                         checksum: Some(vib.checksum),
                         checksum_type: Some(vib.checksum_type),
                         file_type: FileType::Vib,
-                        size: None,
+                        //size: None,
                     });
                 }
             }
@@ -315,7 +315,7 @@ impl ProcessManager {
                                 checksum: Some(vib.checksum),
                                 checksum_type: Some(vib.checksum_type),
                                 file_type: FileType::Vib,
-                                size: None,
+                                //size: None,
                             });
                         }
                     }
@@ -375,12 +375,12 @@ impl ProcessManager {
             checksum,
             checksum_type,
             file_type: self.get_file_type(source),
-            size: None,
+            //size: None,
         })
     }
 
-    pub async fn process_vendor(&self, vendor: &Vendor) -> Result<Vec<String>> {
+/*     pub async fn process_vendor(&self, vendor: &Vendor) -> Result<Vec<String>> {
         // Use the correct field name 'indexfile' instead of 'index_file'
         Ok(vec![format!("{}/{}", vendor.relative_path, vendor.indexfile)])
-    }
+    } */
 }

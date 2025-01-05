@@ -1,7 +1,7 @@
 use crate::config::AppConfig;
-use crate::parser::{AddonMetadata, AddonPackage, DepotParser, Vendor, VmwarePackage, XmlParser}; // Add VmwarePackage, AddonPackage, and AddonMetadata to imports
+use crate::parser::{Vendor, XmlParser};
 use crate::process::{FileType, ProcessManager, Source};
-use crate::verify::{self, VerificationManager};
+use crate::verify::VerificationManager;
 use anyhow::Result;
 use bytes::Bytes;
 use futures::future::join_all;
@@ -9,16 +9,14 @@ use http_body_util::Empty;
 use hyper_tls::HttpsConnector;
 use hyper_util::client::legacy::Client;
 use log::{debug, info, warn};
-use rayon::prelude::*;
+//use rayon::prelude::*;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore}; // Change to use tokio's Mutex // Use renamed import
 
-const MAX_CONCURRENT_DOWNLOADS: usize = 100;
+//const MAX_CONCURRENT_DOWNLOADS: usize = 100;
 
 type DownloadTracker = Arc<Mutex<HashSet<PathBuf>>>;
 // Add a new type for tracking processed files
@@ -100,7 +98,7 @@ pub struct Downloader {
     xml_parser: Arc<XmlParser>,
     download_semaphore: Arc<Semaphore>,
     processed_files: ProcessedFiles,
-    config: Arc<AppConfig>, // Use AppConfig instead of Config
+    //config: Arc<AppConfig>, // Use AppConfig instead of Config
     download_report: Arc<Mutex<DownloadReport>>, // Add this field
 }
 
@@ -114,10 +112,10 @@ struct SourceEntry {
     url: String,
     enabled: bool,
     status: String,
-    vendor: String,
-    #[serde(rename = "type")]
-    source_type: String,
-    description: String,
+    //vendor: String,
+    //#[serde(rename = "type")]
+    //source_type: String,
+    //description: String,
 }
 
 impl Downloader {
@@ -139,7 +137,7 @@ impl Downloader {
             xml_parser: Arc::new(XmlParser::new()),
             download_semaphore: Arc::new(Semaphore::new(config.download.max_concurrent_downloads)),
             processed_files: Arc::new(Mutex::new(HashSet::new())),
-            config: Arc::new(config),
+            //config: Arc::new(config),
             download_report: Arc::new(Mutex::new(DownloadReport::default())), // Initialize the field
         }
     }
@@ -156,7 +154,7 @@ impl Downloader {
         processed.insert(relative_path);
     }
 
-    async fn parse_vendors(&self, url: &str, content: &str) -> Result<Vec<(String, String)>> {
+/*     async fn parse_vendors(&self, url: &str, content: &str) -> Result<Vec<(String, String)>> {
         let mut parser = DepotParser::new(content);
         let mut vendor_urls = Vec::new();
 
@@ -170,7 +168,7 @@ impl Downloader {
 
         Ok(vendor_urls)
     }
-
+ */
     pub async fn process_repository(&self, url: &str) -> Result<()> {
         info!("Processing repository: {}", url);
 
@@ -214,7 +212,7 @@ impl Downloader {
         Ok(())
     }
 
-    async fn process_vendor(&self, vendor_url: &str, vendor: &Vendor) -> Result<()> {
+    async fn process_vendor(&self, vendor_url: &str, _vendor: &Vendor) -> Result<()> {
         // Get base URL without the XML filename
         let base_url = vendor_url
             .rsplit_once('/')
@@ -275,7 +273,7 @@ impl Downloader {
 
     async fn read_sources_file(&self) -> Result<Vec<SourceEntry>> {
         let sources_file = PathBuf::from("sources.toml");
-        if (!sources_file.exists()) {
+        if !sources_file.exists() {
             return Err(anyhow::anyhow!("sources.toml file not found"));
         }
 
@@ -289,9 +287,9 @@ impl Downloader {
         Ok(config.sources)
     }
 
-    pub async fn process_sources_file(&self) -> Result<()> {
+/*     pub async fn process_sources_file(&self) -> Result<()> {
         let sources_file = PathBuf::from("sources"); // Changed to look in current dir
-        if (!sources_file.exists()) {
+        if !sources_file.exists() {
             warn!("Sources file not found: {}", sources_file.display());
             return Ok(());
         }
@@ -309,7 +307,7 @@ impl Downloader {
         }
         Ok(())
     }
-
+ */
     fn extract_relative_path(&self, url: &str) -> String {
         // Find the index after "VUM/PRODUCTION/"
         if let Some(relative_idx) = url
@@ -367,12 +365,12 @@ impl Downloader {
                     //report.files_downloaded += 1;
                     drop(report);
 
-                    // Process XML contents
+/*                     // Process XML contents
                     if let Source::Path(xml_path) = &file.source {
-                        let content = tokio::fs::read_to_string(xml_path).await?;
-                        let mut parser = DepotParser::new(&content);
+                        //let content = tokio::fs::read_to_string(xml_path).await?;
+                        //let parser = DepotParser::new(&content);
                         // ...rest of XML processing...
-                    }
+                    } */
                 }
                 FileType::Zip => {
                     // Track ZIP file immediately when first encountered
@@ -382,7 +380,7 @@ impl Downloader {
                     drop(report);
 
                     // Process ZIP contents
-                    let zip_files = self.processor.process_source(file.source).await?;
+                    //let zip_files = self.processor.process_source(file.source).await?;
                     // ...rest of ZIP processing...
                 }
                 FileType::Vib => {
@@ -508,7 +506,7 @@ impl Downloader {
         Ok(())
     }
 
-    // Add new helper method to handle download and verification
+/*     // Add new helper method to handle download and verification
     async fn download_file_with_verify(&self, relative_path: &str) -> Result<()> {
         let target_path = self.base_path.join(relative_path);
         if !target_path.exists() {
@@ -520,7 +518,7 @@ impl Downloader {
         }
         Ok(())
     }
-
+ */
     async fn download_xml(&self, url: &str) -> Result<String> {
         // Create the target path for the XML file
         let relative_path = self.extract_relative_path(url);
@@ -634,7 +632,7 @@ impl Downloader {
             failed.clone()
         };
 
-        for (url, (path, checksum)) in failed_downloads {
+        for (url, (path, _checksum)) in failed_downloads {
             info!("Retrying download: {}", url);
             if let Err(e) = self.download_file(&url, &path).await {
                 warn!("Retry failed for {}: {}", url, e);
@@ -647,7 +645,7 @@ impl Downloader {
         Ok(())
     }
 
-    pub async fn get_file_type_stats(&self) -> HashMap<String, usize> {
+/*     pub async fn get_file_type_stats(&self) -> HashMap<String, usize> {
         let mut stats = HashMap::new();
         let downloaded = self.downloaded.lock().await;
 
@@ -661,7 +659,7 @@ impl Downloader {
 
         stats
     }
-
+ */
     pub async fn get_failed_downloads(&self) -> Vec<String> {
         let failed = self.failed.lock().await;
         failed.keys().cloned().collect()

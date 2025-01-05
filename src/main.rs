@@ -2,7 +2,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use http_body_util::Empty;
 use hyper_tls::HttpsConnector;
-use hyper_util::client::legacy::{connect::HttpConnector, Client};
+use hyper_util::client::legacy::Client;
 use log::{error, info, warn, LevelFilter};
 use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode, WriteLogger};
 use std::fs::File;

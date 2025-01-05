@@ -23,35 +23,36 @@ pub struct MetadataList {
     pub metadata: Vec<Metadata>
 }
 
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Metadata {
-    pub version: String,
+    //pub version: String,
     pub url: String
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/* #[derive(Debug, Clone, Deserialize)]
 pub struct MetadataResponse {
     pub bulletin: Vec<Bulletin>
-}
+} */
 
-#[derive(Debug, Clone, Deserialize)]
+/* #[derive(Debug, Clone, Deserialize)]
 pub struct Bulletin {
     #[serde(rename = "vibList")]
     pub vib_list: VibList
-}
+} */
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct VibList {
-    pub vib: Vec<VibInfo>
+    //pub vib: Vec<VibInfo>
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/* #[derive(Debug, Clone, Deserialize)]
 pub struct VibInfo {
     pub relative_path: String,
     pub checksum: Option<String>,
     pub checksum_type: Option<String>,
     pub url: String,
-}
+} */
 
 #[derive(Debug, Clone)]
 pub struct VmwarePackage {
@@ -62,19 +63,19 @@ pub struct VmwarePackage {
     pub checksum_type: String,
 }
 
-#[derive(Debug, Clone)]
+/* #[derive(Debug, Clone)]
 pub struct AddonPackage {
     pub name: String,
     pub version: String,
     pub url: String,
-}
+} */
 
-#[derive(Debug, Clone)]
+/* #[derive(Debug, Clone)]
 pub struct AddonMetadata {
     pub name: String,
     pub version: String,
     pub url: String,
-}
+} */
 
 #[derive(Debug, Clone)]
 pub struct VibFile {
@@ -93,11 +94,11 @@ impl<'a> DepotParser<'a> {
         DepotParser { reader }
     }
 
-    // Add a method to create parser from reader
+/*     // Add a method to create parser from reader
     pub fn from_reader(reader: &'a [u8]) -> Self {
         let reader = Reader::from_reader(reader);
         DepotParser { reader }
-    }
+    } */
 
     pub fn parse_packages(&mut self) -> Result<Vec<VmwarePackage>> {
         let mut packages = Vec::new();
@@ -209,7 +210,7 @@ impl<'a> DepotParser<'a> {
         Ok(vendors)
     }
 
-    pub fn parse_addon_metadata(&mut self) -> Result<Vec<AddonPackage>> {
+/*     pub fn parse_addon_metadata(&mut self) -> Result<Vec<AddonPackage>> {
         let mut packages = Vec::new();
         let mut buf = Vec::new();
         let mut current_package = None;
@@ -260,8 +261,8 @@ impl<'a> DepotParser<'a> {
         }
         Ok(packages)
     }
-
-    pub fn parse_addon_index(&mut self) -> Result<Vec<AddonMetadata>> {
+ */
+/*     pub fn parse_addon_index(&mut self) -> Result<Vec<AddonMetadata>> {
         let mut metadata_list = Vec::new();
         let mut buf = Vec::new();
         let mut current_metadata = None;
@@ -321,7 +322,7 @@ impl<'a> DepotParser<'a> {
         
         Ok(metadata_list)
     }
-
+ */
     pub fn parse_vib_files(&mut self) -> Result<Vec<VibFile>> {
         let mut vib_files = Vec::new();
         let mut buf = Vec::new();
@@ -379,7 +380,7 @@ impl<'a> DepotParser<'a> {
         Ok(vib_files)
     }
 
-    // Add new method to parse VIB URLs
+/*     // Add new method to parse VIB URLs
     pub fn parse_vib_urls(&mut self) -> Result<Vec<String>> {
         let mut urls = Vec::new();
         let mut buf = Vec::new();
@@ -410,7 +411,7 @@ impl<'a> DepotParser<'a> {
         }
         Ok(urls)
     }
-}
+ */}
 
 pub struct XmlParser {}
 
@@ -429,7 +430,7 @@ impl XmlParser {
         Ok(metadata_list.metadata)
     }
     
-    pub fn parse_metadata_response(&self, content: &str) -> Result<MetadataResponse> {
+/*     pub fn parse_metadata_response(&self, content: &str) -> Result<MetadataResponse> {
         Ok(quick_xml::de::from_str(content)?)
-    }
+    } */
 }
