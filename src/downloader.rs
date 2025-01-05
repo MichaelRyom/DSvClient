@@ -19,7 +19,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore}; // Change to use tokio's Mutex // Use renamed import
 
-const MAX_CONCURRENT_DOWNLOADS: usize = 10;
+const MAX_CONCURRENT_DOWNLOADS: usize = 100;
 
 type DownloadTracker = Arc<Mutex<HashSet<PathBuf>>>;
 // Add a new type for tracking processed files
@@ -390,43 +390,86 @@ impl Downloader {
                     // Update VIB stats when processing starts
                     let mut report = self.download_report.lock().await;
                     report.downloaded_vibs.insert(target_path.clone());
-                    //report.files_downloaded += 1;
-                    drop(report); // Release lock before continuing
+                    drop(report);
 
-                    // Rest of VIB processing
                     let this = self.clone();
                     let permit = self.download_semaphore.clone().acquire_owned().await?;
                     let file_clone = file.clone();
                     let target_path_clone = target_path.clone();
 
                     tasks.push(tokio::spawn(async move {
-                        // Ensure permit is released using drop guard
                         let _permit_guard = permit;
                         
-                        // Add timeout to individual task
                         match tokio::time::timeout(timeout_duration, async {
-                            let should_download = if target_path_clone.exists() {
+                            // Always verify existing file if checksum is available
+                            let needs_download = if target_path_clone.exists() {
                                 if let (Some(checksum), Some(checksum_type)) = 
                                     (&file_clone.checksum, &file_clone.checksum_type) 
                                 {
-                                    !this.verifier
+                                    match this.verifier
                                         .verify_checksum(&target_path_clone, checksum, checksum_type)
-                                        .await?
+                                        .await 
+                                    {
+                                        Ok(true) => false, // Checksum matches, no download needed
+                                        Ok(false) => {
+                                            info!("Checksum mismatch for {}, will redownload", 
+                                                target_path_clone.display());
+                                            // Delete invalid file
+                                            if let Err(e) = tokio::fs::remove_file(&target_path_clone).await {
+                                                warn!("Failed to delete invalid file: {}", e);
+                                            }
+                                            true
+                                        }
+                                        Err(e) => {
+                                            warn!("Checksum verification failed: {}", e);
+                                            true
+                                        }
+                                    }
                                 } else {
-                                    false
+                                    false // No checksum available, keep existing file
                                 }
                             } else {
-                                true
+                                true // File doesn't exist, needs download
                             };
 
-                            if should_download {
+                            if needs_download {
                                 if let Source::Http(url) = &file_clone.source {
                                     // Download with timeout
                                     match tokio::time::timeout(
-                                        std::time::Duration::from_secs(10),
+                                        std::time::Duration::from_secs(60), // Increased timeout
                                         this.download_file(url, &target_path_clone)
                                     ).await {
-                                        Ok(result) => result?,
+                                        Ok(result) => {
+                                            match result {
+                                                Ok(_) => {
+                                                    // Verify downloaded file
+                                                    if let (Some(checksum), Some(checksum_type)) = 
+                                                        (&file_clone.checksum, &file_clone.checksum_type) 
+                                                    {
+                                                        match this.verifier
+                                                            .verify_checksum(&target_path_clone, checksum, checksum_type)
+                                                            .await 
+                                                        {
+                                                            Ok(true) => Ok(()),
+                                                            Ok(false) => {
+                                                                // Delete invalid download
+                                                                let _ = tokio::fs::remove_file(&target_path_clone).await;
+                                                                this.add_checksum_mismatch(
+                                                                    &target_path_clone,
+                                                                    checksum,
+                                                                    checksum_type
+                                                                ).await;
+                                                                Err(anyhow::anyhow!("Checksum verification failed after download"))
+                                                            }
+                                                            Err(e) => Err(e)
+                                                        }
+                                                    } else {
+                                                        Ok(())
+                                                    }
+                                                }
+                                                Err(e) => Err(e)
+                                            }
+                                        }
                                         Err(_) => {
                                             warn!("Download timeout for {}", url);
                                             this.add_failed_download(
@@ -434,12 +477,15 @@ impl Downloader {
                                                 target_path_clone.clone(),
                                                 None
                                             ).await;
-                                            return Err(anyhow::anyhow!("Download timeout"));
+                                            Err(anyhow::anyhow!("Download timeout"))
                                         }
                                     }
+                                } else {
+                                    Ok(())
                                 }
+                            } else {
+                                Ok(())
                             }
-                            Ok::<(), anyhow::Error>(())
                         }).await {
                             Ok(result) => result,
                             Err(_) => {
@@ -660,5 +706,15 @@ impl Downloader {
             }
         }
         report.files_downloaded = downloaded.len();
+    }
+
+    // Add helper method for tracking checksum mismatches
+    async fn add_checksum_mismatch(&self, path: &Path, expected: &str, actual: &str) {
+        let mut report = self.download_report.lock().await;
+        report.checksum_mismatches.push((
+            path.to_path_buf(),
+            expected.to_string(),
+            actual.to_string()
+        ));
     }
 }
