@@ -4,7 +4,7 @@ max_concurrent_files = 10000
 max_concurrent_verifications = 128  # 4 * num_cpus by default
 
 [download]
-max_concurrent_downloads = 100
+max_concurrent_downloads = 10
 buffer_size = 8388608  # 8MB
 
 [general]

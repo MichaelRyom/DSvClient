@@ -423,7 +423,7 @@ impl Downloader {
                                 if let Source::Http(url) = &file_clone.source {
                                     // Download with timeout
                                     match tokio::time::timeout(
-                                        std::time::Duration::from_secs(60),
+                                        std::time::Duration::from_secs(10),
                                         this.download_file(url, &target_path_clone)
                                     ).await {
                                         Ok(result) => result?,
