@@ -52,7 +52,7 @@ jobs:
 
           # more targets here ...
 
-    runs-on: ${{ matrix.platform.runs-on }}
+    runs-on: ${{ matrix.include.runs-on }}
     steps:
       - name: Checkout
         uses: actions/checkout@v3
