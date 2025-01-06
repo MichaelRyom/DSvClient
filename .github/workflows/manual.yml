@@ -21,7 +21,7 @@ on:
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
   release:
-    name: Release - ${{ matrix.platform.os-name }}
+    name: Release - ${{ matrix.include.os-name }}
     strategy:
       matrix:
         include:
@@ -59,12 +59,12 @@ jobs:
       - name: Build binary
         uses: houseabsolute/actions-rust-cross@v0
         with:
-          command: ${{ matrix.platform.command }}
-          target: ${{ matrix.platform.target }}
+          command: ${{ matrix.include.command }}
+          target: ${{ matrix.include.target }}
           args: "--locked --release"
           strip: true
       - name: Publish artifacts and release
         uses: houseabsolute/actions-rust-release@v0
         with:
           executable-name: ubi
-          target: ${{ matrix.platform.target }}
+          target: ${{ matrix.include.target }}
