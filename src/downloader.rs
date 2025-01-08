@@ -119,6 +119,7 @@ struct SourceEntry {
     url: String,
     enabled: bool,
     status: String,
+    r#type: String,
     //vendor: String,
     //#[serde(rename = "type")]
     //source_type: String,
@@ -261,7 +262,7 @@ impl Downloader {
         // Process all sources concurrently
         let mut tasks = Vec::new();
         for source in sources {
-            if source.enabled && source.status == "Connected" {
+            if source.enabled && source.r#type == "Host" {
                 let this = self.clone();
                 let url = source.url.clone();
                 tasks.push(tokio::spawn(async move {

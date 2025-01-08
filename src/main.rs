@@ -18,6 +18,24 @@ use crate::config::AppConfig; // Use renamed import
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Set up logging
+    let log_file = File::create(download_path.join("download_errors.log"))?;
+    CombinedLogger::init(vec![
+        TermLogger::new(
+            LevelFilter::Info,
+            Config::default(),
+            TerminalMode::Mixed,
+            ColorChoice::Auto,
+        ),
+        WriteLogger::new(LevelFilter::Warn, Config::default(), log_file),
+    ])?;
+
+    // Check for sources.toml instead of sources
+    if !PathBuf::from("sources.toml").exists() {
+        error!("sources.toml file not found");
+        std::process::exit(1);
+    }
+
     // Load config first
     let config = AppConfig::load_or_default();
 
@@ -40,24 +58,6 @@ async fn main() -> Result<()> {
     info!("Using download path: {}", download_path.display());
     std::fs::create_dir_all(&download_path)?;
 
-    // Check for sources.toml instead of sources
-    if !PathBuf::from("sources.toml").exists() {
-        error!("sources.toml file not found");
-        std::process::exit(1);
-    }
-
-    // Set up logging
-    let log_file = File::create(download_path.join("download_errors.log"))?;
-    CombinedLogger::init(vec![
-        TermLogger::new(
-            LevelFilter::Info,
-            Config::default(),
-            TerminalMode::Mixed,
-            ColorChoice::Auto,
-        ),
-        WriteLogger::new(LevelFilter::Warn, Config::default(), log_file),
-    ])?;
-
     let https = HttpsConnector::new();
     let client =
         Client::builder(hyper_util::rt::TokioExecutor::new()).build::<_, Empty<Bytes>>(https);
@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
                 {
                     std::process::exit(1);
                 }
-                info!("\nAll files verified successfully!");
+                //info!("\nAll files verified successfully!");
             }
             Err(e) => {
                 error!("Verification failed: {}", e);
