@@ -44,6 +44,11 @@ jobs:
               sudo mkdir -p /usr/local/freebsd
               sudo tar xf base.txz -C /usr/local/freebsd
 
+              # Remove older leftover references from freebsd12
+              if [ -d "/usr/local/x86_64-unknown-freebsd12" ]; then
+                sudo rm -rf /usr/local/x86_64-unknown-freebsd12
+              fi
+
               # Create library directories
               sudo mkdir -p /usr/local/x86_64-unknown-freebsd/lib
               sudo mkdir -p /usr/x86_64-unknown-freebsd/lib
