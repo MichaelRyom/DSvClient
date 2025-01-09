@@ -21,9 +21,10 @@ on:
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
   release:
-    name: Release - ${{ matrix.include.os-name }}
+    name: Release - ${{ matrix.os-name }}
     strategy:
       matrix:
+        os-name: [FreeBSD-x86_64, Linux-x86_64, Linux-aarch64, Linux-riscv64, Windows-x86_64, macOS-x86_64]
         include:
           - os-name: FreeBSD-x86_64
             runs-on: ubuntu-20.04
@@ -51,20 +52,19 @@ jobs:
             target: x86_64-apple-darwin
 
           # more targets here ...
-
-    runs-on: ${{ matrix.include.runs-on }}
+    runs-on: ${{ matrix.runs-on }}
     steps:
       - name: Checkout
         uses: actions/checkout@v3
       - name: Build binary
         uses: houseabsolute/actions-rust-cross@v0
         with:
-          command: ${{ matrix.include.command }}
-          target: ${{ matrix.include.target }}
+          #command: ${{ matrix.include.command }}
+          target: ${{ matrix.target }}
           args: "--locked --release"
           strip: true
       - name: Publish artifacts and release
         uses: houseabsolute/actions-rust-release@v0
         with:
           executable-name: ubi
-          target: ${{ matrix.include.target }}
+          target: ${{ matrix.target }}
