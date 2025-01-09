@@ -90,6 +90,15 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       
+      - name: Cleanup leftover references
+        run: |
+          if [ -d "/usr/local/x86_64-unknown-freebsd12" ]; then
+            sudo rm -rf /usr/local/x86_64-unknown-freebsd12
+          fi
+          sudo find /usr/local/ -lname '*freebsd12*' -exec sudo rm -f {} \;
+          env | grep freebsd12 | cut -d= -f1 | xargs -r unset
+        shell: bash
+
       - name: Setup Build Environment
         run: ${{ matrix.setup }}
         shell: bash
