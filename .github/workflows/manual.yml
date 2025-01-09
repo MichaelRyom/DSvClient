@@ -98,6 +98,13 @@ jobs:
           env | grep freebsd12 | cut -d= -f1 | xargs -r unset || true
         shell: bash
 
+      - name: Force remove old freebsd12 files
+        if: matrix.target == 'x86_64-unknown-freebsd'
+        run: |
+          sudo rm -rf "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-freebsd12" || true
+          cargo clean --target x86_64-unknown-freebsd || true
+        shell: bash
+
       - name: Setup Build Environment
         run: ${{ matrix.setup }}
         shell: bash
