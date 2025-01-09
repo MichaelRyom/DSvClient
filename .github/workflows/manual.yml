@@ -30,63 +30,56 @@ jobs:
             runs-on: ubuntu-20.04
             target: x86_64-unknown-freebsd
             skip_tests: true
+            setup: |
+              sudo apt-get update
+              sudo apt-get install -y pkg-config musl-tools
+              sudo ln -s /usr/bin/musl-gcc /usr/local/bin/x86_64-unknown-freebsd-gcc
 
           - os-name: Linux-x86_64
             runs-on: ubuntu-20.04
             target: x86_64-unknown-linux-musl
             setup: |
               sudo apt-get update
-              sudo apt-get install -y pkg-config libssl-dev
+              sudo apt-get install -y pkg-config musl-tools libssl-dev
+              sudo ln -s /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc
 
           - os-name: Linux-aarch64
             runs-on: ubuntu-20.04
             target: aarch64-unknown-linux-musl
             setup: |
               sudo apt-get update
-              sudo apt-get install -y pkg-config libssl-dev
+              sudo apt-get install -y pkg-config musl-tools gcc-aarch64-linux-gnu libssl-dev
+              sudo ln -s /usr/bin/aarch64-linux-gnu-gcc /usr/local/bin/aarch64-linux-musl-gcc
 
           - os-name: Linux-riscv64
             runs-on: ubuntu-20.04
             target: riscv64gc-unknown-linux-gnu
             setup: |
               sudo apt-get update
-              sudo apt-get install -y pkg-config libssl-dev
-
-          - os-name: Windows-x86_64
-            runs-on: windows-latest
-            target: x86_64-pc-windows-msvc
-            setup: |
-              vcpkg integrate install
-              vcpkg install openssl:x64-windows-static
-
-          - os-name: macOS-x86_64
-            runs-on: macos-latest
-            target: x86_64-apple-darwin
-            setup: |
-              brew install openssl@3
+              sudo apt-get install -y pkg-config gcc-riscv64-linux-gnu libssl-dev
 
     runs-on: ${{ matrix.runs-on }}
+    env:
+      OPENSSL_STATIC: true
+      OPENSSL_DIR: /usr
+    
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
       
-      - name: Install OpenSSL
+      - name: Install dependencies
         run: ${{ matrix.setup }}
         shell: bash
-      
-      - name: Set OpenSSL Env (Windows)
-        if: matrix.os-name == 'Windows-x86_64'
-        run: echo "OPENSSL_DIR=$env:VCPKG_ROOT\installed\x64-windows-static" >> $GITHUB_ENV
-        shell: pwsh
-        
-      - name: Set OpenSSL Env (macOS)
-        if: matrix.os-name == 'macOS-x86_64'
-        run: echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
+
+      - name: Set cross compilation environment
+        run: |
+          echo "CROSS_COMPILE=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+        shell: bash
 
       - name: Build binary
         uses: houseabsolute/actions-rust-cross@v0
         with:
-          #command: ${{ matrix.include.command }}
           target: ${{ matrix.target }}
           args: "--locked --release"
           strip: true
