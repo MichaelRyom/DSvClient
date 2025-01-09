@@ -34,12 +34,23 @@ jobs:
               sudo apt-get install -y \
                 gcc-multilib \
                 pkg-config \
-                gcc-freebsd-x86-64-linux-gnu \
-                binutils-freebsd \
-                libfreebsd-dev
-              echo "CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_LINKER=x86_64-freebsd-gcc" >> $GITHUB_ENV
-              echo "CC_x86_64_unknown_freebsd=x86_64-freebsd-gcc" >> $GITHUB_ENV
-              echo "RUSTFLAGS=-C target-feature=+crt-static" >> $GITHUB_ENV
+                libbsd-dev \
+                crossbuild-essential-amd64
+              
+              # Install FreeBSD cross tools
+              wget https://pkg.freebsd.org/FreeBSD:13:amd64/latest/All/base.txz
+              sudo tar xf base.txz -C /
+              
+              # Configure cross-compilation environment
+              echo "CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_LINKER=x86_64-freebsd13-gcc" >> $GITHUB_ENV
+              echo "CC_x86_64_unknown_freebsd=x86_64-freebsd13-gcc" >> $GITHUB_ENV
+              echo "RUSTFLAGS=-C target-feature=+crt-static -C link-args=-static" >> $GITHUB_ENV
+              echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+              echo "PKG_CONFIG_PATH=/usr/local/lib/pkgconfig" >> $GITHUB_ENV
+              
+              # Add FreeBSD lib paths
+              sudo mkdir -p /usr/local/x86_64-unknown-freebsd13/lib
+              sudo ln -s /usr/lib/x86_64-linux-gnu/lib*.a /usr/local/x86_64-unknown-freebsd13/lib/
 
           - os-name: Windows-x86_64
             runs-on: windows-latest
