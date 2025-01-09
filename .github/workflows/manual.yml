@@ -34,6 +34,8 @@ jobs:
           - os-name: Linux-x86_64
             runs-on: ubuntu-20.04
             target: x86_64-unknown-linux-musl
+            openssl_package: libssl-dev
+            additional_packages: musl-tools pkg-config
 
           - os-name: Linux-aarch64
             runs-on: ubuntu-20.04
@@ -54,16 +56,17 @@ jobs:
     runs-on: ${{ matrix.runs-on }}
     env:
       OPENSSL_STATIC: true
-      OPENSSL_DIR: /usr
-    
+      OPENSSL_DIR: /usr/lib/ssl
+      PKG_CONFIG_ALLOW_CROSS: "1"
+      OPENSSL_INCLUDE_DIR: /usr/include
+      
     steps:
       - uses: actions/checkout@v3
       
-      - name: Install Linux Dependencies
-        if: runner.os == 'Linux'
+      - name: Install OpenSSL and dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config musl-tools libssl-dev
+          sudo apt-get install -y ${{ matrix.openssl_package }} ${{ matrix.additional_packages }}
         shell: bash
 
       - name: Install macOS Dependencies
@@ -79,10 +82,11 @@ jobs:
           vcpkg install openssl:x64-windows-static
         shell: pwsh
 
-      - name: Set OpenSSL Environment
+      - name: Configure build environment
         run: |
+          echo "RUSTFLAGS=-C target-feature=+crt-static" >> $GITHUB_ENV
           echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=/usr/lib/ssl/pkgconfig" >> $GITHUB_ENV
         shell: bash
 
       - name: Build Release
