@@ -29,7 +29,6 @@ jobs:
           - os-name: FreeBSD-x86_64
             runs-on: ubuntu-20.04
             target: x86_64-unknown-freebsd
-            skip_tests: true
 
           - os-name: Windows-x86_64
             runs-on: windows-latest
@@ -82,6 +81,13 @@ jobs:
           echo "PKG_CONFIG_PATH=/usr/lib/ssl/pkgconfig" >> $GITHUB_ENV
         shell: bash
 
+      - name: Create Changes.md
+        run: |
+          echo "# Changelog" > Changes.md
+          echo "## v0.1.0" >> Changes.md
+          echo "* Initial release" >> Changes.md
+        shell: bash
+
       - name: Build Release
         uses: houseabsolute/actions-rust-cross@v0
         with:
@@ -89,8 +95,9 @@ jobs:
           args: "--locked --release"
           strip: true
 
-      - name: Publish artifacts and release
+      - name: Publish Release
         uses: houseabsolute/actions-rust-release@v0
         with:
           executable-name: DSvC
           target: ${{ matrix.target }}
+          changes-file: Changes.md
