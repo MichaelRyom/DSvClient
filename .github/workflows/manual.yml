@@ -30,6 +30,7 @@ jobs:
             runs-on: ubuntu-20.04
             target: x86_64-unknown-freebsd
             setup: |
+              # Install dependencies
               sudo apt-get update
               sudo apt-get install -y \
                 gcc-multilib \
@@ -37,22 +38,21 @@ jobs:
                 libbsd-dev \
                 crossbuild-essential-amd64
               
-              # Install FreeBSD base system
-              wget https://download.freebsd.org/ftp/releases/amd64/amd64/14.2-RELEASE/base.txz
+              # Download and extract FreeBSD base
+              wget https://download.freebsd.org/ftp/releases/amd64/14.2-RELEASE/base.txz
               sudo mkdir -p /usr/local/freebsd
               sudo tar xf base.txz -C /usr/local/freebsd
               
-              # Configure cross-compilation environment
+              # Set up library paths
+              sudo mkdir -p /usr/local/x86_64-unknown-freebsd/lib
+              sudo find /usr/local/freebsd -name "*.a" -exec cp {} /usr/local/x86_64-unknown-freebsd/lib/ \;
+              
+              # Configure environment
               echo "CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_LINKER=cc" >> $GITHUB_ENV
               echo "CC_x86_64_unknown_freebsd=cc" >> $GITHUB_ENV
               echo "RUSTFLAGS=-C target-feature=+crt-static" >> $GITHUB_ENV
               echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-              echo "PKG_CONFIG_PATH=/usr/local/freebsd/usr/lib/pkgconfig" >> $GITHUB_ENV
-              
-              # Set up library paths
-              sudo mkdir -p /usr/local/x86_64-unknown-freebsd/lib
-              sudo cp /usr/local/freebsd/usr/lib/*.a /usr/local/x86_64-unknown-freebsd/lib/
-              sudo cp /usr/local/freebsd/lib/*.a /usr/local/x86_64-unknown-freebsd/lib/
+              echo "PKG_CONFIG_PATH=/usr/local/x86_64-unknown-freebsd/lib/pkgconfig" >> $GITHUB_ENV
 
           - os-name: Windows-x86_64
             runs-on: windows-latest
