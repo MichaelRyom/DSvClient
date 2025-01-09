@@ -34,28 +34,55 @@ jobs:
           - os-name: Linux-x86_64
             runs-on: ubuntu-20.04
             target: x86_64-unknown-linux-musl
+            setup: |
+              sudo apt-get update
+              sudo apt-get install -y pkg-config libssl-dev
 
           - os-name: Linux-aarch64
             runs-on: ubuntu-20.04
             target: aarch64-unknown-linux-musl
+            setup: |
+              sudo apt-get update
+              sudo apt-get install -y pkg-config libssl-dev
 
           - os-name: Linux-riscv64
             runs-on: ubuntu-20.04
             target: riscv64gc-unknown-linux-gnu
+            setup: |
+              sudo apt-get update
+              sudo apt-get install -y pkg-config libssl-dev
 
           - os-name: Windows-x86_64
             runs-on: windows-latest
             target: x86_64-pc-windows-msvc
+            setup: |
+              vcpkg integrate install
+              vcpkg install openssl:x64-windows-static
 
           - os-name: macOS-x86_64
-            runs-on: macOS-latest
+            runs-on: macos-latest
             target: x86_64-apple-darwin
+            setup: |
+              brew install openssl@3
 
-          # more targets here ...
     runs-on: ${{ matrix.runs-on }}
     steps:
       - name: Checkout
         uses: actions/checkout@v3
+      
+      - name: Install OpenSSL
+        run: ${{ matrix.setup }}
+        shell: bash
+      
+      - name: Set OpenSSL Env (Windows)
+        if: matrix.os-name == 'Windows-x86_64'
+        run: echo "OPENSSL_DIR=$env:VCPKG_ROOT\installed\x64-windows-static" >> $GITHUB_ENV
+        shell: pwsh
+        
+      - name: Set OpenSSL Env (macOS)
+        if: matrix.os-name == 'macOS-x86_64'
+        run: echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
+
       - name: Build binary
         uses: houseabsolute/actions-rust-cross@v0
         with:
