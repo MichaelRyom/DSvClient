@@ -91,12 +91,11 @@ jobs:
       - uses: actions/checkout@v3
       
       - name: Cleanup leftover references
+        if: matrix.target == 'x86_64-unknown-freebsd'
         run: |
-          if [ -d "/usr/local/x86_64-unknown-freebsd12" ]; then
-            sudo rm -rf /usr/local/x86_64-unknown-freebsd12
-          fi
-          sudo find /usr/local/ -lname '*freebsd12*' -exec sudo rm -f {} \;
-          env | grep freebsd12 | cut -d= -f1 | xargs -r unset
+          sudo rm -rf /usr/local/x86_64-unknown-freebsd12 || true
+          sudo find /usr/local/ -lname '*freebsd12*' -exec sudo rm -f {} \; || true
+          env | grep freebsd12 | cut -d= -f1 | xargs -r unset || true
         shell: bash
 
       - name: Setup Build Environment
