@@ -39,15 +39,18 @@ jobs:
                 crossbuild-essential-amd64 \
                 g++-x86-64-linux-gnu
               
-              # Download FreeBSD base
+              # Install Rust target
+              rustup target add x86_64-unknown-freebsd
+              
+              # Download and extract FreeBSD base
               wget https://download.freebsd.org/ftp/releases/amd64/14.2-RELEASE/base.txz
               sudo mkdir -p /usr/local/freebsd
               sudo tar xf base.txz -C /usr/local/freebsd
               
-              # Configure cross compilation
+              # Configure library paths and cross-compilation
               sudo mkdir -p /usr/local/x86_64-unknown-freebsd/lib
-              sudo cp -r /usr/local/freebsd/usr/lib/* /usr/local/x86_64-unknown-freebsd/lib/
-              sudo cp -r /usr/local/freebsd/lib/* /usr/local/x86_64-unknown-freebsd/lib/
+              sudo find /usr/local/freebsd/usr/lib -name "*.so*" -exec cp -P {} /usr/local/x86_64-unknown-freebsd/lib/ \;
+              sudo find /usr/local/freebsd/lib -name "*.so*" -exec cp -P {} /usr/local/x86_64-unknown-freebsd/lib/ \;
               
               # Set environment variables
               echo "CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_LINKER=x86_64-linux-gnu-gcc" >> $GITHUB_ENV
