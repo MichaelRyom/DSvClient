@@ -30,34 +30,29 @@ jobs:
             runs-on: ubuntu-20.04
             target: x86_64-unknown-freebsd
             setup: |
-              # Install dependencies
+              # Install cross-compilation tools
               sudo apt-get update
               sudo apt-get install -y \
                 gcc-multilib \
                 pkg-config \
                 libbsd-dev \
-                crossbuild-essential-amd64
+                crossbuild-essential-amd64 \
+                gcc-freebsd-x86-64-linux-gnu
               
-              # Download and extract FreeBSD base
+              # Download FreeBSD base system
               wget https://download.freebsd.org/ftp/releases/amd64/14.2-RELEASE/base.txz
               sudo mkdir -p /usr/local/freebsd
               sudo tar xf base.txz -C /usr/local/freebsd
               
-              # Copy required libraries
+              # Set up library paths
               sudo mkdir -p /usr/local/x86_64-unknown-freebsd/lib
-              sudo find /usr/local/freebsd/usr/lib -name "*.a" -exec cp {} /usr/local/x86_64-unknown-freebsd/lib/ \;
-              sudo find /usr/local/freebsd/lib -name "*.a" -exec cp {} /usr/local/x86_64-unknown-freebsd/lib/ \;
+              sudo cp -r /usr/local/freebsd/usr/lib/* /usr/local/x86_64-unknown-freebsd/lib/
+              sudo cp -r /usr/local/freebsd/lib/* /usr/local/x86_64-unknown-freebsd/lib/
               
               # Configure linker
-              sudo ln -s /usr/local/x86_64-unknown-freebsd/lib/libexecinfo.a /usr/lib/libexecinfo.a
-              sudo ln -s /usr/local/x86_64-unknown-freebsd/lib/libprocstat.a /usr/lib/libprocstat.a
-              sudo ln -s /usr/local/x86_64-unknown-freebsd/lib/libdevstat.a /usr/lib/libdevstat.a
-              
-              # Set environment
-              echo "CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_LINKER=x86_64-linux-gnu-gcc" >> $GITHUB_ENV
-              echo "CC_x86_64_unknown_freebsd=x86_64-linux-gnu-gcc" >> $GITHUB_ENV
-              echo "RUSTFLAGS=-C target-feature=+crt-static -C linker=x86_64-linux-gnu-gcc" >> $GITHUB_ENV
-              echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+              echo "CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_LINKER=x86_64-freebsd-gcc" >> $GITHUB_ENV
+              echo "CC_x86_64_unknown_freebsd=x86_64-freebsd-gcc" >> $GITHUB_ENV
+              echo "RUSTFLAGS=-C target-feature=+crt-static -C link-arg=-static" >> $GITHUB_ENV
               echo "PKG_CONFIG_PATH=/usr/local/x86_64-unknown-freebsd/lib/pkgconfig" >> $GITHUB_ENV
               echo "LD_LIBRARY_PATH=/usr/local/x86_64-unknown-freebsd/lib" >> $GITHUB_ENV
 
@@ -95,8 +90,6 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          brew update
-          brew install openssl@3
           echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
           echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
           echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
