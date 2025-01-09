@@ -18,8 +18,18 @@ use crate::config::AppConfig; // Use renamed import
 
 #[tokio::main]
 async fn main() -> Result<()> {
-
     let args: Vec<String> = std::env::args().collect();
+
+    // Get the download path by finding the first argument that isn't --verify
+    let download_path = args
+        .iter()
+        .skip(1) // Skip program name
+        .find(|arg| *arg != "--verify")
+        .map(|path| PathBuf::from(path))
+        .ok_or_else(|| {
+            eprintln!("Usage: {} <download_path> [--verify]", args[0]);
+            anyhow::anyhow!("No download path provided")
+        })?;
 
     // Set up logging
     let log_file = File::create(download_path.join("download_errors.log"))?;
@@ -44,17 +54,6 @@ async fn main() -> Result<()> {
 
     // Check for --verify flag but exclude it from being treated as a path
     let verify = args.iter().any(|arg| arg == "--verify");
-
-    // Get the download path by finding the first argument that isn't --verify
-    let download_path = args
-        .iter()
-        .skip(1) // Skip program name
-        .find(|arg| *arg != "--verify")
-        .map(|path| PathBuf::from(path))
-        .ok_or_else(|| {
-            eprintln!("Usage: {} <download_path> [--verify]", args[0]);
-            anyhow::anyhow!("No download path provided")
-        })?;
 
     info!("Using download path: {}", download_path.display());
     std::fs::create_dir_all(&download_path)?;
