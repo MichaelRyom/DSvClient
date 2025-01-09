@@ -18,6 +18,9 @@ use crate::config::AppConfig; // Use renamed import
 
 #[tokio::main]
 async fn main() -> Result<()> {
+
+    let args: Vec<String> = std::env::args().collect();
+
     // Set up logging
     let log_file = File::create(download_path.join("download_errors.log"))?;
     CombinedLogger::init(vec![
@@ -38,8 +41,6 @@ async fn main() -> Result<()> {
 
     // Load config first
     let config = AppConfig::load_or_default();
-
-    let args: Vec<String> = std::env::args().collect();
 
     // Check for --verify flag but exclude it from being treated as a path
     let verify = args.iter().any(|arg| arg == "--verify");
