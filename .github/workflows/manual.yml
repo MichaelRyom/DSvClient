@@ -26,53 +26,6 @@ jobs:
       fail-fast: false  # Don't fail fast to see all build issues
       matrix:
         include:
-          - os-name: FreeBSD-x86_64
-            runs-on: ubuntu-20.04
-            target: x86_64-unknown-freebsd
-            setup: |
-              # Install build tools
-              sudo apt-get update
-              sudo apt-get install -y \
-                gcc-multilib \
-                pkg-config \
-                libbsd-dev \
-                crossbuild-essential-amd64 \
-                g++-x86-64-linux-gnu
-
-              # Setup FreeBSD environment
-              wget https://download.freebsd.org/ftp/releases/amd64/14.2-RELEASE/base.txz
-              sudo mkdir -p /usr/local/freebsd
-              sudo tar xf base.txz -C /usr/local/freebsd
-
-              # Remove older leftover references from freebsd12
-              if [ -d "/usr/local/x86_64-unknown-freebsd12" ]; then
-                sudo rm -rf /usr/local/x86_64-unknown-freebsd12
-              fi
-
-              # Create library directories
-              sudo mkdir -p /usr/local/x86_64-unknown-freebsd/lib
-              sudo mkdir -p /usr/x86_64-unknown-freebsd/lib
-
-              # Copy required libraries and maintain symbolic links
-              for lib in execinfo procstat devstat kvm memstat; do
-                sudo find /usr/local/freebsd -name "lib${lib}.*" -exec cp -P {} /usr/local/x86_64-unknown-freebsd/lib/ \;
-                sudo find /usr/local/freebsd -name "lib${lib}.*" -exec cp -P {} /usr/x86_64-unknown-freebsd/lib/ \;
-              done
-
-              # Copy all static libraries
-              sudo cp -P /usr/local/freebsd/usr/lib/*.a /usr/local/x86_64-unknown-freebsd/lib/
-              sudo cp -P /usr/local/freebsd/usr/lib/*.a /usr/x86_64-unknown-freebsd/lib/
-
-              # Set environment variables
-              echo "CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_LINKER=x86_64-linux-gnu-gcc" >> $GITHUB_ENV
-              echo "CC_x86_64_unknown_freebsd=x86_64-linux-gnu-gcc" >> $GITHUB_ENV
-              echo "RUSTFLAGS=-C target-feature=+crt-static -C link-args='-L/usr/local/x86_64-unknown-freebsd/lib -L/usr/x86_64-unknown-freebsd/lib -static'" >> $GITHUB_ENV
-              echo "PKG_CONFIG_PATH=/usr/local/x86_64-unknown-freebsd/lib/pkgconfig:/usr/x86_64-unknown-freebsd/lib/pkgconfig" >> $GITHUB_ENV
-              echo "LD_LIBRARY_PATH=/usr/local/x86_64-unknown-freebsd/lib:/usr/x86_64-unknown-freebsd/lib" >> $GITHUB_ENV
-
-              # Install Rust target
-              rustup target add x86_64-unknown-freebsd
-
           - os-name: Windows-x86_64
             runs-on: windows-latest
             target: x86_64-pc-windows-msvc
@@ -90,25 +43,6 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       
-      - name: Cleanup leftover references
-        if: matrix.target == 'x86_64-unknown-freebsd'
-        run: |
-          sudo rm -rf /usr/local/x86_64-unknown-freebsd12 || true
-          sudo find /usr/local/ -lname '*freebsd12*' -exec sudo rm -f {} \; || true
-          env | grep freebsd12 | cut -d= -f1 | xargs -r unset || true
-        shell: bash
-
-      - name: Force remove old freebsd12 files
-        if: matrix.target == 'x86_64-unknown-freebsd'
-        run: |
-          sudo rm -rf "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-freebsd12" || true
-          cargo clean --target x86_64-unknown-freebsd || true
-        shell: bash
-
-      - name: Setup Build Environment
-        run: ${{ matrix.setup }}
-        shell: bash
-
       # Windows specific step
       - name: Install Dependencies (Windows)
         if: runner.os == 'Windows'
