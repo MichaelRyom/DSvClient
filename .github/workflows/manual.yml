@@ -98,6 +98,6 @@ jobs:
       - name: Publish Release
         uses: houseabsolute/actions-rust-release@v0
         with:
-          executable-name: DSvC
+          executable-name: vmware-downloader
           target: ${{ matrix.target }}
           changes-file: Changes.md
