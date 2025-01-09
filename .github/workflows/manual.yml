@@ -23,7 +23,7 @@ jobs:
   release:
     name: Release - ${{ matrix.os-name }}
     strategy:
-      fail-fast: false  # Continue with other builds if one fails
+      fail-fast: true
       matrix:
         include:
           - os-name: FreeBSD-x86_64
