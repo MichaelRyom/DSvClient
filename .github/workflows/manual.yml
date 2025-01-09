@@ -1,6 +1,6 @@
 # This is a basic workflow that is manually triggered
 
-name: Manual workflow
+name: Manual Build
 
 # Controls when the action will run. Workflow runs when manually triggered using the UI
 # or API.
@@ -30,33 +30,26 @@ jobs:
             runs-on: ubuntu-20.04
             target: x86_64-unknown-freebsd
             skip_tests: true
-            setup: |
-              sudo apt-get update
-              sudo apt-get install -y pkg-config musl-tools
-              sudo ln -s /usr/bin/musl-gcc /usr/local/bin/x86_64-unknown-freebsd-gcc
 
           - os-name: Linux-x86_64
             runs-on: ubuntu-20.04
             target: x86_64-unknown-linux-musl
-            setup: |
-              sudo apt-get update
-              sudo apt-get install -y pkg-config musl-tools libssl-dev
-              sudo ln -s /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc
 
           - os-name: Linux-aarch64
             runs-on: ubuntu-20.04
             target: aarch64-unknown-linux-musl
-            setup: |
-              sudo apt-get update
-              sudo apt-get install -y pkg-config musl-tools gcc-aarch64-linux-gnu libssl-dev
-              sudo ln -s /usr/bin/aarch64-linux-gnu-gcc /usr/local/bin/aarch64-linux-musl-gcc
 
           - os-name: Linux-riscv64
             runs-on: ubuntu-20.04
             target: riscv64gc-unknown-linux-gnu
-            setup: |
-              sudo apt-get update
-              sudo apt-get install -y pkg-config gcc-riscv64-linux-gnu libssl-dev
+
+          - os-name: Windows-x86_64
+            runs-on: windows-latest
+            target: x86_64-pc-windows-msvc
+
+          - os-name: macOS-x86_64
+            runs-on: macos-latest
+            target: x86_64-apple-darwin
 
     runs-on: ${{ matrix.runs-on }}
     env:
@@ -66,23 +59,39 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       
-      - name: Install dependencies
-        run: ${{ matrix.setup }}
-        shell: bash
-
-      - name: Set cross compilation environment
+      - name: Install Linux Dependencies
+        if: runner.os == 'Linux'
         run: |
-          echo "CROSS_COMPILE=1" >> $GITHUB_ENV
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+          sudo apt-get update
+          sudo apt-get install -y pkg-config musl-tools libssl-dev
         shell: bash
 
-      - name: Build binary
+      - name: Install macOS Dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install openssl@3
+        shell: bash
+
+      - name: Install Windows Dependencies
+        if: runner.os == 'Windows'
+        run: |
+          vcpkg integrate install
+          vcpkg install openssl:x64-windows-static
+        shell: pwsh
+
+      - name: Set OpenSSL Environment
+        run: |
+          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Build Release
         uses: houseabsolute/actions-rust-cross@v0
         with:
           target: ${{ matrix.target }}
           args: "--locked --release"
           strip: true
+
       - name: Publish artifacts and release
         uses: houseabsolute/actions-rust-release@v0
         with:
