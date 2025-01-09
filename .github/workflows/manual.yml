@@ -48,19 +48,32 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       
-      - name: Install Dependencies
-        shell: ${{ matrix.os-name == 'Windows-x86_64' && 'pwsh' || 'bash' }}
+      # Windows specific step
+      - name: Install Dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          if [ "${{ runner.os }}" = "macOS" ]; then
-            brew update
-            brew install openssl@3
-            echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
-            echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
-            echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
-          elif [ "${{ runner.os }}" = "Windows" ]; then
-            vcpkg integrate install
-            vcpkg install openssl:x64-windows-static
-          fi
+          vcpkg integrate install
+          vcpkg install openssl:x64-windows-static
+
+      # macOS specific step
+      - name: Install Dependencies (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew update
+          brew install openssl@3
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
+
+      # Linux specific step
+      - name: Install Dependencies (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
 
       - name: Configure build environment
         run: |
