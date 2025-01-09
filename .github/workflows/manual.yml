@@ -38,7 +38,7 @@ jobs:
                 crossbuild-essential-amd64
               
               # Install FreeBSD base system
-              wget https://download.freebsd.org/ftp/releases/amd64/13.2-RELEASE/base.txz
+              wget https://download.freebsd.org/ftp/releases/amd64/amd64/14.2-RELEASE/base.txz
               sudo mkdir -p /usr/local/freebsd
               sudo tar xf base.txz -C /usr/local/freebsd
               
