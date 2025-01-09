@@ -53,26 +53,26 @@ jobs:
               sudo mkdir -p /usr/local/x86_64-unknown-freebsd/lib
               sudo mkdir -p /usr/x86_64-unknown-freebsd/lib
 
-              # Find and copy required libraries safely
+              # Find and copy required libraries with sudo
               for lib in execinfo procstat devstat kvm memstat; do
-                find /usr/local/freebsd -name "lib${lib}.*" -exec sudo cp -Pv {} /usr/local/x86_64-unknown-freebsd/lib/ \; || true
-                find /usr/local/freebsd -name "lib${lib}.*" -exec sudo cp -Pv {} /usr/x86_64-unknown-freebsd/lib/ \; || true
+                sudo find /usr/local/freebsd -name "lib${lib}.*" -exec sudo cp -Pv {} /usr/local/x86_64-unknown-freebsd/lib/ \; 2>/dev/null || true
+                sudo find /usr/local/freebsd -name "lib${lib}.*" -exec sudo cp -Pv {} /usr/x86_64-unknown-freebsd/lib/ \; 2>/dev/null || true
               done
 
-              # Copy static libraries with error checking
-              if [ -d "/usr/local/freebsd/usr/lib" ]; then
-                sudo cp -Pv /usr/local/freebsd/usr/lib/*.a /usr/local/x86_64-unknown-freebsd/lib/ || true
-                sudo cp -Pv /usr/local/freebsd/usr/lib/*.a /usr/x86_64-unknown-freebsd/lib/ || true
-              fi
-
-              if [ -d "/usr/local/freebsd/lib" ]; then
-                sudo cp -Pv /usr/local/freebsd/lib/*.a /usr/local/x86_64-unknown-freebsd/lib/ || true
-                sudo cp -Pv /usr/local/freebsd/lib/*.a /usr/x86_64-unknown-freebsd/lib/ || true
-              fi
+              # Copy static libraries using sudo find
+              echo "Copying static libraries..."
+              sudo find /usr/local/freebsd/usr/lib -name "*.a" -exec cp -Pv {} /usr/local/x86_64-unknown-freebsd/lib/ \; 2>/dev/null || true
+              sudo find /usr/local/freebsd/usr/lib -name "*.a" -exec cp -Pv {} /usr/x86_64-unknown-freebsd/lib/ \; 2>/dev/null || true
+              sudo find /usr/local/freebsd/lib -name "*.a" -exec cp -Pv {} /usr/local/x86_64-unknown-freebsd/lib/ \; 2>/dev/null || true
+              sudo find /usr/local/freebsd/lib -name "*.a" -exec cp -Pv {} /usr/x86_64-unknown-freebsd/lib/ \; 2>/dev/null || true
 
               # Print directory structure for debugging
               echo "FreeBSD library structure:"
-              find /usr/local/freebsd -name "*.a" -o -name "*.so*"
+              sudo find /usr/local/freebsd \( -name "*.a" -o -name "*.so*" \) 2>/dev/null || true
+
+              # Fix permissions
+              sudo chown -R $(id -u):$(id -g) /usr/local/x86_64-unknown-freebsd
+              sudo chown -R $(id -u):$(id -g) /usr/x86_64-unknown-freebsd
 
               # Set environment variables with updated paths
               echo "CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_LINKER=x86_64-linux-gnu-gcc" >> $GITHUB_ENV
