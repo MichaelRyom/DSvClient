@@ -17,7 +17,8 @@ use tokio::task;
 use tokio::sync::Mutex as TokioMutex;
 use std::collections::HashMap;
 use crate::config::AppConfig;  // Use renamed import
-  // Rename conflicting imports
+use tokio::sync::Mutex;
+use log::debug;
 
 
 // Increase parallelism and optimize buffer sizes
@@ -25,7 +26,7 @@ use crate::config::AppConfig;  // Use renamed import
 const MAX_CONCURRENT_FILES: usize = 1000; // Process many files simultaneously
 //const THREAD_SLEEP_MS: u64 = 0; // Remove artificial delay
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct VerificationReport {
     pub files_checked: usize,
     pub vib_files_missing: Vec<PathBuf>,
@@ -74,14 +75,15 @@ impl VerificationReport {
     }
 }
 
+#[derive(Clone)]  // Add Clone derive
 pub struct AsyncReport {
-    inner: TokioMutex<VerificationReport>,
+    inner: Arc<TokioMutex<VerificationReport>>,  // Change to Arc
 }
 
 impl AsyncReport {
-    pub fn new() -> Self {  // Change from private to public
+    pub fn new() -> Self {
         Self {
-            inner: TokioMutex::new(VerificationReport::default()),
+            inner: Arc::new(TokioMutex::new(VerificationReport::default())),
         }
     }
 
@@ -116,14 +118,20 @@ impl AsyncReport {
     }
 
     async fn into_inner(self) -> VerificationReport {
-        self.inner.into_inner()
+        match Arc::try_unwrap(self.inner) {
+            Ok(mutex) => mutex.into_inner(),
+            Err(arc) => arc.lock().await.clone()
+        }
     }
 }
 
+#[derive(Clone)]  // Add Clone derive
 pub struct VerificationManager {
     //thread_pool: Arc<rayon::ThreadPool>,
     semaphore: Arc<Semaphore>,
     config: Arc<AppConfig>,  // Use AppConfig instead of Config
+    verified_files: Arc<Mutex<HashSet<PathBuf>>>,
+    metadata_cache: Arc<Mutex<HashMap<PathBuf, (String, String)>>>, // Cache for (checksum, checksum_type)
 }
 
 impl VerificationManager {
@@ -141,10 +149,34 @@ impl VerificationManager {
             //thread_pool: Arc::new(thread_pool),
             semaphore: Arc::new(Semaphore::new(concurrent_verifications)),
             config: Arc::new(config),  // Initialize config
+            verified_files: Arc::new(Mutex::new(HashSet::new())),
+            metadata_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
     
     pub async fn verify_checksum(&self, path: &Path, expected: &str, checksum_type: &str) -> Result<bool> {
+        // Check if already verified
+        {
+            let verified = self.verified_files.lock().await;
+            if verified.contains(path) {
+                debug!("Already verified: {}", path.display());
+                return Ok(true);
+            }
+        }
+
+        // Do verification
+        let result = self.do_verify_checksum(path, expected, checksum_type).await?;
+        
+        // Track successful verifications
+        if result {
+            let mut verified = self.verified_files.lock().await;
+            verified.insert(path.to_path_buf());
+        }
+
+        Ok(result)
+    }
+
+    async fn do_verify_checksum(&self, path: &Path, expected: &str, checksum_type: &str) -> Result<bool> {
         if checksum_type.to_lowercase() != "sha-256" {
             return Ok(false);
         }
@@ -173,12 +205,22 @@ impl VerificationManager {
 
         result
     }
+
+    pub async fn cache_vib_info(&self, path: PathBuf, checksum: String, checksum_type: String) {
+        let mut cache = self.metadata_cache.lock().await;
+        cache.insert(path, (checksum, checksum_type));
+    }
+
+    pub async fn get_cached_metadata(&self, path: &Path) -> Option<(String, String)> {
+        let cache = self.metadata_cache.lock().await;
+        cache.get(path).cloned()
+    }
 }
 
 // Update function signature to accept Path
 pub async fn verify_directory(source: &Path) -> Result<VerificationReport> {
     let config = AppConfig::load_or_default();
-    let report = AsyncReport::new();
+    let report = Arc::new(AsyncReport::new());  // Wrap in Arc
     let verifier = VerificationManager::new(config);
 
     // Check if source is a path or URL
@@ -194,47 +236,72 @@ pub async fn verify_directory(source: &Path) -> Result<VerificationReport> {
     }
     
     // Handle directory verification
-    verify_directory_internal(source, &verifier, &report).await?;
+    verify_directory_internal(source, &verifier, report.clone()).await?;
 
-    Ok(report.into_inner().await)
+    // Use try_unwrap or other Arc handling here if needed
+    match Arc::try_unwrap(report) {
+        Ok(report) => Ok(report.into_inner().await),
+        Err(_) => Err(anyhow::anyhow!("Could not unwrap report"))
+    }
 }
 
-async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, report: &AsyncReport) -> Result<()> {
+// Update function signature to take Arc
+async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, report: Arc<AsyncReport>) -> Result<()> {
     let https = HttpsConnector::new();
     let client = Client::builder(hyper_util::rt::TokioExecutor::new())
         .build::<_, Empty<Bytes>>(https);
-    
     let processor = ProcessManager::new(client, path.to_path_buf());
     
-    // Use Arc<Mutex<>> for shared state
-    let vib_checksums: Arc<TokioMutex<HashMap<PathBuf, Option<(String, String)>>>> = 
-        Arc::new(TokioMutex::new(HashMap::new()));
-    let mut to_process = Vec::new();
+    // First populate metadata cache if empty
+    {
+        let cache = verifier.metadata_cache.lock().await;
+        if cache.is_empty() {
+            drop(cache);  // Release lock before scanning
+            
+            // Find and process XML/ZIP files first
+            let mut stack = vec![path.to_path_buf()];
+            while let Some(dir) = stack.pop() {
+                let mut entries = fs::read_dir(&dir).await?;
+                while let Some(entry) = entries.next_entry().await? {
+                    let path = entry.path();
+                    if path.is_file() {
+                        match path.extension().and_then(|e| e.to_str()) {
+                            Some("xml") | Some("zip") => {
+                                let source = Source::Path(path.clone());
+                                if let Ok(files) = processor.process_source(source).await {
+                                    for file in files {
+                                        if let FileType::Vib = file.file_type {
+                                            if let (Some(checksum), Some(checksum_type)) = (file.checksum, file.checksum_type) {
+                                                if let Source::Path(vib_path) = file.source {
+                                                    verifier.cache_vib_info(vib_path, checksum, checksum_type).await;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    } else if path.is_dir() {
+                        stack.push(path);
+                    }
+                }
+            }
+        }
+    }
 
-    // First pass: collect files to process
+    // Now verify VIB files using populated cache
+    let mut vib_paths = Vec::new();
+    
+    // Just scan for VIB files, don't process XML/ZIP yet
     let mut stack = vec![path.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let mut entries = fs::read_dir(&dir).await?;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             if path.is_file() {
-                match path.extension().and_then(|e| e.to_str()) {
-                    Some("xml") => {
-                        info!("Found XML file: {}", path.display());
-                        to_process.push(Source::Path(path.clone()));
-                        report.add_xml(path).await;
-                    }
-                    Some("zip") => {
-                        info!("Found ZIP file: {}", path.display());
-                        to_process.push(Source::Path(path.clone()));
-                        report.add_zip(path).await;
-                    }
-                    Some("vib") => {
-                        // Add VIBs to shared map
-                        let mut checksums = vib_checksums.lock().await;
-                        checksums.insert(path, None);
-                    }
-                    _ => {}
+                if path.extension().and_then(|e| e.to_str()) == Some("vib") {
+                    vib_paths.push(path);
                 }
             } else if path.is_dir() {
                 stack.push(path);
@@ -242,65 +309,36 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
         }
     }
 
-    // Process XML/ZIP files
+    // Process VIBs in parallel using cached metadata
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_FILES));
     let mut tasks = Vec::new();
 
-    for source in to_process {
+    for vib_path in vib_paths {
         let permit = semaphore.clone().acquire_owned().await?;
-        let source_clone = source.clone();
-        let processor = processor.clone();
-        let checksums = vib_checksums.clone();
-        //let path = path.to_path_buf();
-
+        let verifier = verifier.clone();
+        let report = report.clone();  // Now cloning Arc<AsyncReport>
+        
         tasks.push(tokio::spawn(async move {
             let _permit = permit;
-            if let Ok(files) = processor.process_source(source_clone).await {
-                for file in files {
-                    if let FileType::Vib = file.file_type {
-                        if let (Some(checksum), Some(checksum_type)) = (file.checksum, file.checksum_type) {
-                            if checksum_type.to_lowercase() == "sha-256" {
-                                if let Source::Path(vib_path) = file.source {
-                                    let mut checksums = checksums.lock().await;
-                                    checksums.insert(vib_path, Some((checksum, checksum_type)));
-                                }
-                            }
-                        }
-                    }
+            report.increment_checked().await;
+            
+            // Check metadata cache first
+            if let Some((checksum, checksum_type)) = verifier.get_cached_metadata(&vib_path).await {
+                match verifier.verify_checksum(&vib_path, &checksum, &checksum_type).await {
+                    Ok(true) => (),
+                    Ok(false) => report.add_mismatch(vib_path.clone(), checksum).await,
+                    Err(e) => report.add_error(vib_path.clone(), format!("Verification failed: {}", e)).await,
                 }
+            } else {
+                report.add_error(vib_path, "No metadata found".to_string()).await;
             }
             Ok::<(), anyhow::Error>(())
         }));
     }
 
-    // Wait for metadata processing
+    // Wait for all verifications
     for task in tasks {
         task.await??;
-    }
-
-    // Verify VIBs
-    let checksums = vib_checksums.lock().await;
-    
-    for (vib_path, checksum_info) in checksums.iter() {
-        // Check if file exists
-        match tokio::fs::metadata(vib_path).await {
-            Ok(_) => {
-                if let Some((checksum, checksum_type)) = checksum_info {
-                    report.increment_checked().await;
-                    match verifier.verify_checksum(vib_path, checksum, checksum_type).await {
-                        Ok(true) => (),
-                        Ok(false) => report.add_mismatch(vib_path.clone(), checksum.clone()).await,
-                        Err(e) => report.add_error(vib_path.clone(), format!("Verification failed: {}", e)).await,
-                    }
-                }
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                report.add_missing(vib_path.clone()).await;
-            },
-            Err(e) => {
-                report.add_error(vib_path.clone(), format!("Cannot access file: {}", e)).await;
-            }
-        }
     }
 
     Ok(())

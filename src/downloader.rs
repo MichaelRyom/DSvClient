@@ -566,6 +566,17 @@ impl Downloader {
                             }
                         }
                     }));
+
+                    if let (Some(checksum), Some(checksum_type)) = (&file.checksum, &file.checksum_type) {
+                        if let Source::Path(vib_path) = &file.source {
+                            // Cache metadata during download
+                            self.verifier.cache_vib_info(
+                                vib_path.clone(),
+                                checksum.clone(),
+                                checksum_type.clone()
+                            ).await;
+                        }
+                    }
                 }
                 _ => debug!("Skipping unknown file type: {}", file.relative_path),
             }

@@ -7,6 +7,7 @@ use log::{error, info, warn, LevelFilter};
 use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode, WriteLogger};
 use std::fs::File;
 use std::path::PathBuf;
+use std::time::Instant;
 
 mod config;
 mod downloader;
@@ -16,8 +17,14 @@ mod verify;
 
 use crate::config::AppConfig; // Use renamed import
 
+fn fail_and_exit(start_time: &std::time::Instant, message: &str) -> ! {
+    info!("Execution failed after {:?}: {}", start_time.elapsed(), message);
+    std::process::exit(1);
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    let start_time = Instant::now();
     let args: Vec<String> = std::env::args().collect();
 
     // Get the download path by finding the first argument that isn't --verify
@@ -46,7 +53,7 @@ async fn main() -> Result<()> {
     // Check for sources.toml instead of sources
     if !PathBuf::from("sources.toml").exists() {
         error!("sources.toml file not found");
-        std::process::exit(1);
+        fail_and_exit(&start_time, "sources.toml file not found");
     }
 
     // Load config first
@@ -76,13 +83,13 @@ async fn main() -> Result<()> {
                     || !report.checksum_mismatches.is_empty()
                     || !report.error_files.is_empty()
                 {
-                    std::process::exit(1);
+                    fail_and_exit(&start_time, "Verification failed");
                 }
                 //info!("\nAll files verified successfully!");
             }
             Err(e) => {
                 error!("Verification failed: {}", e);
-                std::process::exit(1);
+                fail_and_exit(&start_time, "Verification failed");
             }
         }
     } else {
@@ -120,6 +127,9 @@ async fn main() -> Result<()> {
         let report = service.get_download_report().await;
         report.print_summary();
     }
+
+    let elapsed = start_time.elapsed();
+    info!("Execution completed in: {:?}", elapsed);
 
     Ok(())
 }
