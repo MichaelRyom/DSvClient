@@ -98,9 +98,10 @@ jobs:
         if: runner.os == 'Windows' && matrix.skip == false
         shell: pwsh
         run: |
+          cargo install sccache
           echo "CARGO_INCREMENTAL=1" >> $env:GITHUB_ENV
           echo "CARGO_NET_RETRY=10" >> $env:GITHUB_ENV
-          echo "RUSTC_WRAPPER=sccache" >> $env:GITHUB_ENV
+          echo "RUSTC_WRAPPER=$(where.exe sccache)" >> $env:GITHUB_ENV
           echo "CARGO_BUILD_TARGET_DIR=target" >> $env:GITHUB_ENV
 
       - name: Cache vcpkg (Windows)
