@@ -72,7 +72,7 @@ jobs:
               # Set environment variables with isolated paths
               echo "CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_LINKER=x86_64-linux-gnu-gcc" >> $GITHUB_ENV
               echo "CC_x86_64_unknown_freebsd=x86_64-linux-gnu-gcc" >> $GITHUB_ENV
-              echo "RUSTFLAGS=-C target-feature=+crt-static -C link-args='-L/usr/cross/freebsd/lib -L/usr/cross/freebsd/usr/lib -static-libgcc -static -pthread'" >> $GITHUB_ENV
+              echo "RUSTFLAGS=-C target-feature=+crt-static -C link-args='-L/usr/cross/freebsd/lib -L/usr/cross/freebsd/usr/lib -pthread'" >> $GITHUB_ENV
               echo "PKG_CONFIG_PATH=/usr/cross/freebsd/lib/pkgconfig" >> $GITHUB_ENV
 
               # Debug: List all libraries
