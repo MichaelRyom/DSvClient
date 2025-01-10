@@ -28,6 +28,7 @@ jobs:
         include:
           - os-name: FreeBSD-x86_64
             runs-on: ubuntu-20.04
+            skip: true
             target: x86_64-unknown-freebsd
             setup: |
               # Remove old references
@@ -48,24 +49,18 @@ jobs:
 
           - os-name: Linux-x86_64
             runs-on: ubuntu-latest
+            skip: false
             target: x86_64-unknown-linux-gnu
 
           - os-name: Windows-x86_64
             runs-on: windows-latest
+            skip: true
             target: x86_64-pc-windows-msvc
 
           - os-name: macOS-x86_64
             runs-on: macos-latest
+            skip: false
             target: x86_64-apple-darwin
-        exclude:
-          - os-name: FreeBSD-x86_64
-            if: contains(github.event.inputs.name, 'FreeBSD') == false
-          - os-name: Linux-x86_64
-            if: contains(github.event.inputs.name, 'Linux') == true
-          - os-name: Windows-x86_64
-            if: contains(github.event.inputs.name, 'Windows') == false
-          - os-name: macOS-x86_64
-            if: contains(github.event.inputs.name, 'macOS') == true
 
     runs-on: ${{ matrix.runs-on }}
     env:
@@ -206,6 +201,7 @@ jobs:
         shell: bash
 
       - name: Build Release
+        if: matrix.skip == false
         uses: houseabsolute/actions-rust-cross@v0
         with:
           target: ${{ matrix.target }}
@@ -213,6 +209,7 @@ jobs:
           strip: true
 
       - name: Publish Release
+        if: matrix.skip == false
         uses: houseabsolute/actions-rust-release@v0
         with:
           executable-name: vmware-downloader
