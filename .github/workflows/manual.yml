@@ -77,6 +77,25 @@ jobs:
           key: ${{ runner.os }}-vcpkg-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-vcpkg-
 
+      - name: Cache custom tools (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v3
+        with:
+          path: C:/tools
+          key: ${{ runner.os }}-custom-tools-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-custom-tools-
+
+      - name: Download custom tools (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          mkdir -p C:/tools
+          if [ ! -f "C:/tools/dos2unix.exe" ]; then
+            choco install dos2unix -y --install-directory=C:/tools
+          fi
+          if [ ! -f "C:/tools/psutils.zip" ]; then
+            curl -L https://github.com/lukesampson/psutils/archive/master.zip -o C:/tools/psutils.zip
+          fi
+
       - name: Cache Rust toolchain
         uses: actions/cache@v3
         with:
@@ -91,6 +110,22 @@ jobs:
           path: target/x86_64-unknown-freebsd
           key: ${{ runner.os }}-freebsd-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-freebsd-cargo-
+
+      - name: Cache cross-rs cache (FreeBSD)
+        if: matrix.os-name == 'FreeBSD-x86_64'
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/.cache/cross
+          key: ${{ runner.os }}-cross-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cross-
+
+      - name: Cache cross binary (FreeBSD)
+        if: matrix.os-name == 'FreeBSD-x86_64'
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/bin/cross
+          key: ${{ runner.os }}-cross-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cross-
 
       - name: Cache Windows compiled artifacts
         if: runner.os == 'Windows'
