@@ -106,28 +106,28 @@ jobs:
           restore-keys: ${{ runner.os }}-rustup-
 
       - name: Cache cross compiled artifacts (FreeBSD)
-        if: runner.os == 'FreeBSD-x86_64'
+        if: matrix.os-name == 'FreeBSD-x86_64'
         uses: actions/cache@v3
         with:
           path: target/x86_64-unknown-freebsd
-          key: ${{ runner.os }}-freebsd-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-freebsd-cargo-
+          key: ${{ matrix.os-name }}-freebsd-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ matrix.os-name }}-freebsd-cargo-
 
       - name: Cache cross-rs cache (FreeBSD)
-        if: runner.os == 'FreeBSD-x86_64'
+        if: matrix.os-name == 'FreeBSD-x86_64'
         uses: actions/cache@v3
         with:
           path: ~/.cargo/.cache/cross
-          key: ${{ runner.os }}-cross-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cross-
+          key: ${{ matrix.os-name }}-cross-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ matrix.os-name }}-cross-
 
       - name: Cache cross binary (FreeBSD)
-        if: runner.os == 'FreeBSD-x86_64'
+        if: matrix.os-name == 'FreeBSD-x86_64'
         uses: actions/cache@v3
         with:
           path: ~/.cargo/bin/cross
-          key: ${{ runner.os }}-cross-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cross-
+          key: ${{ matrix.os-name }}-cross-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ matrix.os-name }}-cross-
 
       - name: Cache Windows compiled artifacts
         if: runner.os == 'Windows'
