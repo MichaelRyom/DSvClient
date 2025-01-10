@@ -102,7 +102,7 @@ jobs:
           if (-not (Test-Path "C:/tools")){
             New-Item -Path "C:/tools" -ItemType Directory -force
           }
-          choco install dos2unix -y --no-progress --debug --verbose
+          choco install dos2unix psutils 7zip.install -y --no-progress --debug --verbose
           # Copy directly from chocolatey shim location
           #Get-childitem "C:/ProgramData/chocolatey/lib/dos2unix/tools/" -recurse
           Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/bin/dos2unix.exe" -Destination "C:/tools/"
