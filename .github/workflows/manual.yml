@@ -28,7 +28,7 @@ jobs:
         include:
           - os-name: FreeBSD-x86_64
             runs-on: ubuntu-20.04
-            skip: false
+            skip: true
             target: x86_64-unknown-freebsd
             setup: |
               # Remove old references
