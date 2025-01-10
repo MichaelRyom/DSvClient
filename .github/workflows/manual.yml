@@ -95,7 +95,11 @@ jobs:
 
       - name: Configure build environment
         run: |
-          echo "RUSTFLAGS=-C target-feature=+crt-static" >> $GITHUB_ENV
+          if [ "${{ matrix.os-name }}" = "FreeBSD-x86_64" ]; then
+            echo "Not setting RUSTFLAGS for FreeBSD."
+          else
+            echo "RUSTFLAGS=-C target-feature=+crt-static" >> $GITHUB_ENV
+          fi
           echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
         shell: bash
 
