@@ -35,6 +35,14 @@ jobs:
               sudo rm -rf /usr/local/freebsd
               sudo rm -rf /usr/cross/freebsd
 
+              # Create cache directory if it doesn't exist
+              mkdir -p ~/.cache/cross-rs
+
+              # Check if we have a cached API response
+              if [ ! -f ~/.cache/cross-rs/latest.json ]; then
+                curl -sL https://api.github.com/repos/cross-rs/cross/releases/latest > ~/.cache/cross-rs/latest.json
+              fi
+
               # Only install the Rust target
               rustup target add x86_64-unknown-freebsd
 
@@ -129,6 +137,15 @@ jobs:
           path: ~/.cargo/bin/cross
           key: ${{ matrix.os-name }}-cross-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ matrix.os-name }}-cross-
+
+      - name: Cache cross-rs API response
+        if: matrix.os-name == 'FreeBSD-x86_64'
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/cross-rs
+          key: cross-rs-api-${{ github.sha }}
+          restore-keys: |
+            cross-rs-api-
 
       - name: Cache Windows compiled artifacts
         if: runner.os == 'Windows'
