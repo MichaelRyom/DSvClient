@@ -170,16 +170,6 @@ jobs:
           echo "OPENSSL_INCLUDE_DIR=/usr/include/openssl" >> $GITHUB_ENV
           echo "OPENSSL_DIR=/usr" >> $GITHUB_ENV
 
-      - name: Configure build environment
-        run: |
-          if [ "${{ matrix.os-name }}" = "FreeBSD-x86_64" ]; then
-            echo "Not setting RUSTFLAGS for FreeBSD."
-          else
-            echo "RUSTFLAGS=-C target-feature=+crt-static" >> $GITHUB_ENV
-          fi
-          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
-        shell: bash
-
       - name: Create Changes.md
         run: |
           echo "# Changelog" > Changes.md
