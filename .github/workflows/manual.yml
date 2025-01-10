@@ -104,9 +104,9 @@ jobs:
           }
           choco install dos2unix -y --no-progress --debug --verbose
           # Copy directly from chocolatey shim location
-          Get-childitem "C:/ProgramData/chocolatey/lib/dos2unix/tools/" -recurse
-          Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/dos2unix.exe" -Destination "C:/tools/"
-          Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/unix2dos.exe" -Destination "C:/tools/"
+          #Get-childitem "C:/ProgramData/chocolatey/lib/dos2unix/tools/" -recurse
+          Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/bin/dos2unix.exe" -Destination "C:/tools/"
+          Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/bin/unix2dos.exe" -Destination "C:/tools/"
 
       - name: Add tools to PATH (Windows)
         if: runner.os == 'Windows' && matrix.skip == false
