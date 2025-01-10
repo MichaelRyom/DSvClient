@@ -49,46 +49,39 @@ jobs:
               sudo rm -rf /usr/local/x86_64-unknown-freebsd
               sudo rm -rf /usr/x86_64-unknown-freebsd
 
-              # Create fresh directories
-              sudo mkdir -p /usr/local/x86_64-unknown-freebsd/lib
-              sudo mkdir -p /usr/x86_64-unknown-freebsd/lib
+              # Create isolated library directories (changed paths)
+              sudo mkdir -p /usr/cross/freebsd/lib
+              sudo mkdir -p /usr/cross/freebsd/usr/lib
 
-              # Copy FreeBSD system libraries first
+              # Copy FreeBSD system libraries to isolated location
               echo "Copying system libraries..."
-              sudo cp -Pv /usr/local/freebsd/lib/libc.* /usr/local/x86_64-unknown-freebsd/lib/
-              sudo cp -Pv /usr/local/freebsd/lib/lib*.so* /usr/local/x86_64-unknown-freebsd/lib/
+              sudo cp -P /usr/local/freebsd/lib/libc.* /usr/cross/freebsd/lib/
+              sudo cp -P /usr/local/freebsd/lib/lib*.so* /usr/cross/freebsd/lib/
 
               # Copy required static libraries with better error handling
               echo "Copying static libraries..."
               for lib in execinfo procstat devstat kvm memstat; do
-                sudo find /usr/local/freebsd -type f -name "lib${lib}.a" -exec cp -v {} /usr/local/x86_64-unknown-freebsd/lib/ \; || true
-                sudo find /usr/local/freebsd/usr/lib -type f -name "lib${lib}.a" -exec cp -v {} /usr/local/x86_64-unknown-freebsd/lib/ \; || true
+                sudo find /usr/local/freebsd -type f -name "lib${lib}.a" -exec cp -v {} /usr/cross/freebsd/usr/lib/ \; || true
+                sudo find /usr/local/freebsd/usr/lib -type f -name "lib${lib}.a" -exec cp -v {} /usr/cross/freebsd/usr/lib/ \; || true
               done
 
               # Copy remaining static libraries
-              sudo find /usr/local/freebsd/lib -type f -name "*.a" -exec cp -v {} /usr/local/x86_64-unknown-freebsd/lib/ \; || true
-              sudo find /usr/local/freebsd/usr/lib -type f -name "*.a" -exec cp -v {} /usr/local/x86_64-unknown-freebsd/lib/ \; || true
-
-              # Mirror to the other lib directory
-              sudo cp -rf /usr/local/x86_64-unknown-freebsd/lib/* /usr/x86_64-unknown-freebsd/lib/
+              sudo find /usr/local/freebsd/lib -type f -name "*.a" -exec cp -v {} /usr/cross/freebsd/lib/ \; || true
+              sudo find /usr/local/freebsd/usr/lib -type f -name "*.a" -exec cp -v {} /usr/cross/freebsd/usr/lib/ \; || true
 
               # Fix permissions
-              sudo chown -R $(id -u):$(id -g) /usr/local/x86_64-unknown-freebsd
-              sudo chown -R $(id -u):$(id -g) /usr/x86_64-unknown-freebsd
-              sudo chmod -R 755 /usr/local/x86_64-unknown-freebsd
-              sudo chmod -R 755 /usr/x86_64-unknown-freebsd
+              sudo chown -R $(id -u):$(id -g) /usr/cross
+              sudo chmod -R 755 /usr/cross
 
-              # Set environment variables with updated paths and flags
+              # Set environment variables with isolated paths
               echo "CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_LINKER=x86_64-linux-gnu-gcc" >> $GITHUB_ENV
               echo "CC_x86_64_unknown_freebsd=x86_64-linux-gnu-gcc" >> $GITHUB_ENV
-              echo "RUSTFLAGS=-C target-feature=+crt-static -C link-args='-L/usr/local/x86_64-unknown-freebsd/lib -L/usr/x86_64-unknown-freebsd/lib -static-libgcc -static -pthread'" >> $GITHUB_ENV
-              echo "PKG_CONFIG_PATH=/usr/local/x86_64-unknown-freebsd/lib/pkgconfig:/usr/x86_64-unknown-freebsd/lib/pkgconfig" >> $GITHUB_ENV
-              echo "LD_LIBRARY_PATH=/usr/local/x86_64-unknown-freebsd/lib:/usr/x86_64-unknown-freebsd/lib" >> $GITHUB_ENV
+              echo "RUSTFLAGS=-C target-feature=+crt-static -C link-args='-L/usr/cross/freebsd/lib -L/usr/cross/freebsd/usr/lib -static-libgcc -static -pthread'" >> $GITHUB_ENV
+              echo "PKG_CONFIG_PATH=/usr/cross/freebsd/lib/pkgconfig" >> $GITHUB_ENV
 
               # Debug: List all libraries
               echo "Library contents:"
-              find /usr/local/x86_64-unknown-freebsd/lib -type f -name "lib*"
-              find /usr/x86_64-unknown-freebsd/lib -type f -name "lib*"
+              find /usr/cross/freebsd -type f -name "lib*"
 
               # Install Rust target
               rustup target add x86_64-unknown-freebsd
