@@ -77,6 +77,13 @@ jobs:
           key: ${{ runner.os }}-vcpkg-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-vcpkg-
 
+      - name: Cache Rust toolchain
+        uses: actions/cache@v3
+        with:
+          path: ${{ runner.os == 'Windows' && 'C:/Users/runneradmin/.rustup' || '~/.rustup' }}
+          key: ${{ runner.os }}-rustup-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-rustup-
+
       - name: Setup Build Environment
         if: matrix.setup != ''
         run: ${{ matrix.setup }}
