@@ -121,7 +121,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cross-
 
       - name: Cache cross binary (FreeBSD)
-        if: runner.os == 'FreeBSD-x86_64'
+        if: matrix.os-name == 'FreeBSD-x86_64'
         uses: actions/cache@v3
         with:
           path: ~/.cargo/bin/cross
@@ -172,7 +172,7 @@ jobs:
 
       - name: Configure build environment
         run: |
-          if [ "${{ runner.os }}" = "FreeBSD-x86_64" ]; then
+          if [ "${{ matrix.os-name }}" = "FreeBSD-x86_64" ]; then
             echo "Not setting RUSTFLAGS for FreeBSD."
           else
             echo "RUSTFLAGS=-C target-feature=+crt-static" >> $GITHUB_ENV
