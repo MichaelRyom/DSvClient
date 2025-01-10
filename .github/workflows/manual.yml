@@ -102,9 +102,9 @@ jobs:
           if (-not (Test-Path "C:/tools")){
             New-Item -Path "C:/tools" -ItemType Directory -force
           }
-          choco install dos2unix -y --no-progress
+          choco install dos2unix -y --no-progress --debug --verbose
           # Copy directly from chocolatey shim location
-          Get-childitem "C:/ProgramData/chocolatey/lib/dos2unix/tools/ -recurse
+          Get-childitem "C:/ProgramData/chocolatey/lib/dos2unix/tools/" -recurse
           Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/dos2unix.exe" -Destination "C:/tools/"
           Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/unix2dos.exe" -Destination "C:/tools/"
 
