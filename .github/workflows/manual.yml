@@ -30,62 +30,12 @@ jobs:
             runs-on: ubuntu-20.04
             target: x86_64-unknown-freebsd
             setup: |
-              # Remove any leftover old freebsd12 libraries
-              sudo find /usr/local -name '*freebsd12*' -exec rm -rf {} \; || true
+              # Remove old references
+              echo "Skipping manual FreeBSD libraries..."
+              sudo rm -rf /usr/local/freebsd
+              sudo rm -rf /usr/cross/freebsd
 
-              # Install build tools
-              sudo apt-get update
-              sudo apt-get install -y \
-                gcc-multilib \
-                pkg-config \
-                libbsd-dev \
-                crossbuild-essential-amd64 \
-                g++-x86-64-linux-gnu
-
-              # Setup FreeBSD environment
-              wget https://download.freebsd.org/ftp/releases/amd64/14.2-RELEASE/base.txz
-              sudo mkdir -p /usr/local/freebsd
-              sudo tar xf base.txz -C /usr/local/freebsd
-
-              # Clean up thoroughly
-              sudo rm -rf /usr/local/x86_64-unknown-freebsd12
-              sudo rm -rf /usr/local/x86_64-unknown-freebsd
-              sudo rm -rf /usr/x86_64-unknown-freebsd
-
-              # Create isolated library directories (changed paths)
-              sudo mkdir -p /usr/cross/freebsd/lib
-              sudo mkdir -p /usr/cross/freebsd/usr/lib
-
-              # Copy FreeBSD system libraries to isolated location
-              echo "Copying system libraries..."
-              sudo cp -P /usr/local/freebsd/lib/libc.* /usr/cross/freebsd/lib/
-              sudo cp -P /usr/local/freebsd/lib/lib*.so* /usr/cross/freebsd/lib/
-
-              # Remove the loop for execinfo, procstat, devstat, kvm, memstat
-              echo "Skipping problematic libraries..."
-
-              # Copy remaining static libraries
-              sudo find /usr/local/freebsd/lib -type f -name "*.a" -exec cp -v {} /usr/cross/freebsd/lib/ \; || true
-              sudo find /usr/local/freebsd/usr/lib -type f -name "*.a" -exec cp -v {} /usr/cross/freebsd/usr/lib/ \; || true
-
-              # Fix permissions
-              sudo chown -R $(id -u):$(id -g) /usr/cross
-              sudo chmod -R 755 /usr/cross
-
-              # Set environment variables with isolated paths
-              echo "CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_LINKER=x86_64-linux-gnu-gcc" >> $GITHUB_ENV
-              echo "CC_x86_64_unknown_freebsd=x86_64-linux-gnu-gcc" >> $GITHUB_ENV
-              echo "PKG_CONFIG_PATH=/usr/cross/freebsd/lib/pkgconfig" >> $GITHUB_ENV
-
-              # Remove explicit RUSTFLAGS so we rely on the default
-              echo "Removing custom link args..."
-              sed -i '/RUSTFLAGS=/d' $GITHUB_ENV
-
-              # Debug: List all libraries
-              echo "Library contents:"
-              find /usr/cross/freebsd -type f -name "lib*"
-
-              # Install Rust target
+              # Only install the Rust target
               rustup target add x86_64-unknown-freebsd
 
           - os-name: Linux-x86_64
