@@ -158,6 +158,14 @@ jobs:
           key: ${{ runner.os }}-win-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-win-cargo-
 
+      - name: Cache apt packages
+        if: matrix.os-name == 'FreeBSD-x86_64' && matrix.skip == false
+        uses: actions/cache@v3
+        with:
+          path: /var/cache/apt
+          key: freebsd-apt-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: freebsd-apt-
+
       - name: Setup Build Environment
         if: matrix.setup != '' && matrix.skip == false
         run: ${{ matrix.setup }}
@@ -191,6 +199,12 @@ jobs:
           echo "OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu" >> $GITHUB_ENV
           echo "OPENSSL_INCLUDE_DIR=/usr/include/openssl" >> $GITHUB_ENV
           echo "OPENSSL_DIR=/usr" >> $GITHUB_ENV
+
+      - name: Install Dependencies (FreeBSD)
+        if: matrix.os-name == 'FreeBSD-x86_64' && matrix.skip == false
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
 
       - name: Create Changes.md
         run: |
