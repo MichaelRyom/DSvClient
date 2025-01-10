@@ -88,24 +88,28 @@ jobs:
       - name: Cache custom tools (Windows)
         if: runner.os == 'Windows' && matrix.skip == false
         uses: actions/cache@v3
+        id: custom-tools-cache  # Add ID to check cache status
         with:
-          path: C:/tools
-          key: ${{ runner.os }}-custom-tools-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-custom-tools-
+          path: |
+            C:/tools
+            C:/ProgramData/chocolatey/lib/dos2unix
+          key: ${{ runner.os }}-custom-tools-v1-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Download custom tools (Windows)
-        if: runner.os == 'Windows' && matrix.skip == false
+        if: runner.os == 'Windows' && matrix.skip == false && steps.custom-tools-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           if (-not (Test-Path "C:/tools")){
-            New-Item -Path "C:/tools" -ItemType Directory -force}
-          if (-not (Test-Path "C:/tools/dos2unix.exe")) {
-            choco install dos2unix -y 
-            Move-Item -Path "C:/ProgramData/chocolatey/lib/dos2unix/tools/dos2unix.exe" -Destination "C:/tools/dos2unix.exe"
+            New-Item -Path "C:/tools" -ItemType Directory -force
           }
-          if (-not (Test-Path "C:/tools/psutils.zip")) {
-            Invoke-WebRequest -Uri "https://github.com/lukesampson/psutils/archive/master.zip" -OutFile "C:/tools/psutils.zip"
-          }
+          choco install dos2unix -y --no-progress
+          Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/dos2unix.exe" -Destination "C:/tools/"
+
+      - name: Add tools to PATH (Windows)
+        if: runner.os == 'Windows' && matrix.skip == false
+        shell: pwsh
+        run: |
+          echo "C:/tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Cache Rust toolchain
         if: matrix.skip == false
