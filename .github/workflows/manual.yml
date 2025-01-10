@@ -103,7 +103,9 @@ jobs:
             New-Item -Path "C:/tools" -ItemType Directory -force
           }
           choco install dos2unix -y --no-progress
-          Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/dos2unix.exe" -Destination "C:/tools/"
+          # Update path to match actual installation location
+          Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/dos2unix-7.5.2-win64-nls/dos2unix.exe" -Destination "C:/tools/"
+          Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/dos2unix-7.5.2-win64-nls/unix2dos.exe" -Destination "C:/tools/"
 
       - name: Add tools to PATH (Windows)
         if: runner.os == 'Windows' && matrix.skip == false
@@ -126,15 +128,6 @@ jobs:
           path: target/x86_64-unknown-freebsd
           key: ${{ matrix.os-name }}-freebsd-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ matrix.os-name }}-freebsd-cargo-
-
-      - name: Cache cross-rs API response
-        if: matrix.os-name == 'FreeBSD-x86_64' && matrix.skip == false
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/cross-rs
-          key: cross-rs-api-${{ github.sha }}
-          restore-keys: |
-            cross-rs-api-
 
       - name: Cache cross Docker image
         if: matrix.os-name == 'FreeBSD-x86_64' && matrix.skip == false
