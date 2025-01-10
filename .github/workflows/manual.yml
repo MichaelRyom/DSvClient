@@ -74,18 +74,34 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-            ~/.cargo/bin
-            # Add caching for compiled crates
-            ~/.cargo/.crates.toml
-            ~/.cargo/.crates2.json
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            # Add platform specific paths
-            ${{ runner.os == 'Windows' && 'C:/Users/runneradmin/.cargo' || '~/.cargo' }}
-          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+            # Windows specific paths
+            C:/Users/runneradmin/.cargo/registry
+            C:/Users/runneradmin/.cargo/git
+            # Cache build artifacts
+            target/x86_64-pc-windows-msvc/release/deps
+            target/x86_64-pc-windows-msvc/release/build
+            target/x86_64-pc-windows-msvc/release/.fingerprint
+            # Cache compiled dependencies
+            target/release/deps
+            target/release/.fingerprint
+            # Cache registry
+            C:/Users/runneradmin/.cargo/.crates.toml
+            C:/Users/runneradmin/.cargo/.crates2.json
+            C:/Users/runneradmin/.cargo/registry/index
+            C:/Users/runneradmin/.cargo/registry/cache
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-${{ matrix.target }}-
             ${{ runner.os }}-cargo-
+
+      - name: Configure Cargo
+        if: runner.os == 'Windows' && matrix.skip == false
+        shell: pwsh
+        run: |
+          echo "CARGO_INCREMENTAL=1" >> $env:GITHUB_ENV
+          echo "CARGO_NET_RETRY=10" >> $env:GITHUB_ENV
+          echo "RUSTC_WRAPPER=sccache" >> $env:GITHUB_ENV
+          echo "CARGO_BUILD_TARGET_DIR=target" >> $env:GITHUB_ENV
 
       - name: Cache vcpkg (Windows)
         if: runner.os == 'Windows' && matrix.skip == false
