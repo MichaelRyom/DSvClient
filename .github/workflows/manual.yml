@@ -84,6 +84,22 @@ jobs:
           key: ${{ runner.os }}-rustup-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-rustup-
 
+      - name: Cache cross compiled artifacts (FreeBSD)
+        if: matrix.os-name == 'FreeBSD-x86_64'
+        uses: actions/cache@v3
+        with:
+          path: target/x86_64-unknown-freebsd
+          key: ${{ runner.os }}-freebsd-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-freebsd-cargo-
+
+      - name: Cache Windows compiled artifacts
+        if: runner.os == 'Windows'
+        uses: actions/cache@v3
+        with:
+          path: target/x86_64-pc-windows-msvc
+          key: ${{ runner.os }}-win-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-win-cargo-
+
       - name: Setup Build Environment
         if: matrix.setup != ''
         run: ${{ matrix.setup }}
