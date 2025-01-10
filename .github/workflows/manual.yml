@@ -69,6 +69,14 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
+      - name: Cache vcpkg (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v3
+        with:
+          path: C:/vcpkg/installed
+          key: ${{ runner.os }}-vcpkg-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-vcpkg-
+
       - name: Setup Build Environment
         if: matrix.setup != ''
         run: ${{ matrix.setup }}
