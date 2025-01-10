@@ -58,12 +58,8 @@ jobs:
               sudo cp -P /usr/local/freebsd/lib/libc.* /usr/cross/freebsd/lib/
               sudo cp -P /usr/local/freebsd/lib/lib*.so* /usr/cross/freebsd/lib/
 
-              # Copy required static libraries with better error handling
-              echo "Copying static libraries..."
-              for lib in execinfo procstat devstat kvm memstat; do
-                sudo find /usr/local/freebsd -type f -name "lib${lib}.a" -exec cp -v {} /usr/cross/freebsd/usr/lib/ \; || true
-                sudo find /usr/local/freebsd/usr/lib -type f -name "lib${lib}.a" -exec cp -v {} /usr/cross/freebsd/usr/lib/ \; || true
-              done
+              # Remove the loop for execinfo, procstat, devstat, kvm, memstat
+              echo "Skipping problematic libraries..."
 
               # Copy remaining static libraries
               sudo find /usr/local/freebsd/lib -type f -name "*.a" -exec cp -v {} /usr/cross/freebsd/lib/ \; || true
