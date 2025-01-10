@@ -153,6 +153,24 @@ jobs:
           restore-keys: |
             cross-rs-api-
 
+      - name: Cache cross Docker image
+        if: matrix.os-name == 'FreeBSD-x86_64' && matrix.skip == false
+        uses: actions/cache@v3
+        id: cached-image
+        with:
+          path: ${{ runner.temp }}/freebsd-cross.tar
+          key: freebsd-cross-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Load cross Docker image
+        if: matrix.os-name == 'FreeBSD-x86_64' && matrix.skip == false && steps.cached-image.outputs.cache-hit == 'true'
+        run: docker load -i $RUNNER_TEMP/freebsd-cross.tar
+
+      - name: Pull and Save cross Docker image
+        if: matrix.os-name == 'FreeBSD-x86_64' && matrix.skip == false && steps.cached-image.outputs.cache-hit != 'true'
+        run: |
+          docker pull ghcr.io/cross-rs/x86_64-unknown-freebsd:0.2.5
+          docker save ghcr.io/cross-rs/x86_64-unknown-freebsd:0.2.5 -o $RUNNER_TEMP/freebsd-cross.tar
+
       - name: Cache Windows compiled artifacts
         if: runner.os == 'Windows' && matrix.skip == false
         uses: actions/cache@v3
