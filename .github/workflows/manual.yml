@@ -103,9 +103,9 @@ jobs:
             New-Item -Path "C:/tools" -ItemType Directory -force
           }
           choco install dos2unix -y --no-progress
-          # Update path to match actual installation location
-          Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/dos2unix-7.5.2-win64-nls/dos2unix.exe" -Destination "C:/tools/"
-          Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/dos2unix-7.5.2-win64-nls/unix2dos.exe" -Destination "C:/tools/"
+          # Copy directly from chocolatey shim location
+          Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/dos2unix.exe" -Destination "C:/tools/"
+          Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/unix2dos.exe" -Destination "C:/tools/"
 
       - name: Add tools to PATH (Windows)
         if: runner.os == 'Windows' && matrix.skip == false
