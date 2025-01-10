@@ -29,7 +29,6 @@ jobs:
           - os-name: FreeBSD-x86_64
             runs-on: ubuntu-20.04
             target: x86_64-unknown-freebsd
-            enabled: true  # Set to false to disable
             setup: |
               # Remove old references
               echo "Skipping manual FreeBSD libraries..."
@@ -50,20 +49,24 @@ jobs:
           - os-name: Linux-x86_64
             runs-on: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            enabled: false   # Set to false to disable
 
           - os-name: Windows-x86_64
             runs-on: windows-latest
             target: x86_64-pc-windows-msvc
-            enabled: true   # Set to false to disable
 
           - os-name: macOS-x86_64
             runs-on: macos-latest
             target: x86_64-apple-darwin
-            enabled: false   # Set to false to disable
+        exclude:
+          - os-name: FreeBSD-x86_64
+            if: contains(github.event.inputs.name, 'FreeBSD') == false
+          - os-name: Linux-x86_64
+            if: contains(github.event.inputs.name, 'Linux') == true
+          - os-name: Windows-x86_64
+            if: contains(github.event.inputs.name, 'Windows') == false
+          - os-name: macOS-x86_64
+            if: contains(github.event.inputs.name, 'macOS') == true
 
-    # Add condition to skip disabled builds
-    if: ${{ matrix.enabled }}
     runs-on: ${{ matrix.runs-on }}
     env:
       OPENSSL_STATIC: true
