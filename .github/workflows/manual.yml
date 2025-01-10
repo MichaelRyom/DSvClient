@@ -92,7 +92,7 @@ jobs:
           New-Item -Path "C:/tools" -ItemType Directory -Force
           if (-not (Test-Path "C:/tools/dos2unix.exe")) {
             choco install dos2unix -y 
-            Move-Item -Path "C:/ProgramData/chocolatey/bin/dos2unix.exe" -Destination "C:/tools/dos2unix.exe"
+            Move-Item -Path "C:/ProgramData/chocolatey/lib/dos2unix/tools/dos2unix.exe" -Destination "C:/tools/dos2unix.exe"
           }
           if (-not (Test-Path "C:/tools/psutils.zip")) {
             Invoke-WebRequest -Uri "https://github.com/lukesampson/psutils/archive/master.zip" -OutFile "C:/tools/psutils.zip"
