@@ -39,11 +39,6 @@ jobs:
               # Create cache directory if it doesn't exist
               mkdir -p ~/.cache/cross-rs
 
-              # Check if we have a cached API response
-              if [ ! -f ~/.cache/cross-rs/latest.json ]; then
-                curl -sL https://api.github.com/repos/cross-rs/cross/releases/latest > ~/.cache/cross-rs/latest.json
-              fi
-
               # Only install the Rust target
               rustup target add x86_64-unknown-freebsd
 
@@ -127,22 +122,6 @@ jobs:
           path: target/x86_64-unknown-freebsd
           key: ${{ matrix.os-name }}-freebsd-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ matrix.os-name }}-freebsd-cargo-
-
-      - name: Cache cross-rs cache (FreeBSD)
-        if: matrix.os-name == 'FreeBSD-x86_64' && matrix.skip == false
-        uses: actions/cache@v3
-        with:
-          path: ~/.cargo/.cache/cross
-          key: ${{ matrix.os-name }}-cross-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ matrix.os-name }}-cross-
-
-      - name: Cache cross binary (FreeBSD)
-        if: matrix.os-name == 'FreeBSD-x86_64' && matrix.skip == false
-        uses: actions/cache@v3
-        with:
-          path: ~/.cargo/bin/cross
-          key: ${{ matrix.os-name }}-cross-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ matrix.os-name }}-cross-
 
       - name: Cache cross-rs API response
         if: matrix.os-name == 'FreeBSD-x86_64' && matrix.skip == false
