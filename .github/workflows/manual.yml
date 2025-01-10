@@ -28,7 +28,7 @@ jobs:
         include:
           - os-name: FreeBSD-x86_64
             runs-on: ubuntu-20.04
-            skip: true
+            skip: false
             target: x86_64-unknown-freebsd
             setup: |
               # Remove old references
@@ -49,17 +49,17 @@ jobs:
 
           - os-name: Linux-x86_64
             runs-on: ubuntu-latest
-            skip: false
+            skip: true
             target: x86_64-unknown-linux-gnu
 
           - os-name: Windows-x86_64
             runs-on: windows-latest
-            skip: true
+            skip: false
             target: x86_64-pc-windows-msvc
 
           - os-name: macOS-x86_64
             runs-on: macos-latest
-            skip: false
+            skip: true
             target: x86_64-apple-darwin
 
     runs-on: ${{ matrix.runs-on }}
