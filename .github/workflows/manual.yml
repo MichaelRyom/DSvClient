@@ -87,14 +87,15 @@ jobs:
 
       - name: Download custom tools (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          mkdir -p C:/tools
-          if [ ! -f "C:/tools/dos2unix.exe" ]; then
+          New-Item -Path "C:/tools" -ItemType Directory -Force
+          if (-not (Test-Path "C:/tools/dos2unix.exe")) {
             choco install dos2unix -y --install-directory=C:/tools
-          fi
-          if [ ! -f "C:/tools/psutils.zip" ]; then
-            curl -L https://github.com/lukesampson/psutils/archive/master.zip -o C:/tools/psutils.zip
-          fi
+          }
+          if (-not (Test-Path "C:/tools/psutils.zip")) {
+            Invoke-WebRequest -Uri "https://github.com/lukesampson/psutils/archive/master.zip" -OutFile "C:/tools/psutils.zip"
+          }
 
       - name: Cache Rust toolchain
         uses: actions/cache@v3
