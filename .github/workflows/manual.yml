@@ -89,7 +89,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -Path "C:/tools" -ItemType Directory -Force
+          New-Item -Path "C:/tools" -ItemType Directory
           if (-not (Test-Path "C:/tools/dos2unix.exe")) {
             choco install dos2unix -y 
             Move-Item -Path "C:/ProgramData/chocolatey/lib/dos2unix/tools/dos2unix.exe" -Destination "C:/tools/dos2unix.exe"
