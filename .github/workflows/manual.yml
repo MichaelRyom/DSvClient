@@ -47,11 +47,12 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
             # Windows specific paths
             C:/Users/runneradmin/.cargo/registry
             C:/Users/runneradmin/.cargo/git
             # Cache build artifacts
+            target
+            target/x86_64-pc-windows-msvc
             target/x86_64-pc-windows-msvc/release/deps
             target/x86_64-pc-windows-msvc/release/build
             target/x86_64-pc-windows-msvc/release/.fingerprint
@@ -63,9 +64,10 @@ jobs:
             C:/Users/runneradmin/.cargo/.crates2.json
             C:/Users/runneradmin/.cargo/registry/index
             C:/Users/runneradmin/.cargo/registry/cache
-          key: windows-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml') }}
+          key: windows-cargo-all-v1-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml') }}
           restore-keys: |
-            windows-cargo-
+            windows-cargo-all-v1-
+            windows-cargo-all-
 
       - name: Cache custom tools (Windows)
         uses: actions/cache@v3
@@ -129,13 +131,6 @@ jobs:
           path: C:/Users/runneradmin/.rustup
           key: windows-rustup-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: windows-rustup-
-
-      - name: Cache Windows compiled artifacts
-        uses: actions/cache@v3
-        with:
-          path: target/x86_64-pc-windows-msvc
-          key: windows-cargo-compiled-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: windows-cargo-compiled-
 
       - name: Install Dependencies (Windows)
         shell: pwsh
