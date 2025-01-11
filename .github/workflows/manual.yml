@@ -42,6 +42,12 @@ jobs:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: 0
       CARGO_NET_RETRY: 10
+      VCPKG_ROOT: C:\vcpkg
+      OPENSSL_DIR: C:/vcpkg/installed/x64-windows-static
+      OPENSSL_STATIC: 1
+      OPENSSL_LIB_DIR: C:/vcpkg/installed/x64-windows-static/lib
+      OPENSSL_INCLUDE_DIR: C:/vcpkg/installed/x64-windows-static/include
+      CMAKE_TOOLCHAIN_FILE: C:/vcpkg/scripts/buildsystems/vcpkg.cmake
     steps:
       - uses: actions/checkout@v3
 
@@ -157,14 +163,30 @@ jobs:
       - name: Build Release
         shell: pwsh
         run: |
-          cargo build --release --target x86_64-pc-windows-msvc
-          # Debug output
-          Get-ChildItem -Path "target" -Recurse -Filter "vmware-downloader*"
-          if (Test-Path "target/x86_64-pc-windows-msvc/release/vmware-downloader.exe") {
-            Write-Host "Binary found at expected location"
+          Write-Host "Current directory: $(Get-Location)"
+          Write-Host "Environment variables:"
+          Get-ChildItem env:
+          
+          Write-Host "`nChecking vcpkg installation:"
+          Get-ChildItem "C:/vcpkg/installed/x64-windows-static" -Recurse | Select-Object FullName
+          
+          Write-Host "`nBuilding project..."
+          cargo build --release --target x86_64-pc-windows-msvc --verbose
+          
+          Write-Host "`nSearching for binary..."
+          Get-ChildItem -Path "target" -Recurse -Filter "vmware-downloader*" | ForEach-Object {
+              Write-Host "Found: $($_.FullName)"
+          }
+          
+          $binPath = "target/x86_64-pc-windows-msvc/release/vmware-downloader.exe"
+          if (Test-Path $binPath) {
+              Write-Host "`nBinary found at: $binPath"
+              Get-Item $binPath | Select-Object FullName, Length, LastWriteTime
           } else {
-            Write-Error "Binary not found at expected location"
-            exit 1
+              Write-Host "`nChecking parent directory structure:"
+              Get-ChildItem -Path "target" -Recurse | Select-Object FullName
+              Write-Error "Binary not found at expected location: $binPath"
+              exit 1
           }
 
       - name: Strip Binary (Windows)
