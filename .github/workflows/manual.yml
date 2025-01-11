@@ -36,7 +36,7 @@ on:
 
 jobs:
   build-windows:
-    if: ${{ github.event.inputs.run_windows }}
+    if: ${{ github.event.inputs.run_windows == 'true' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v3
@@ -174,7 +174,7 @@ jobs:
           changes-file: Changes.md
 
   build-ubuntu:
-    if: ${{ github.event.inputs.run_linux }}
+    if: ${{ github.event.inputs.run_linux == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -238,7 +238,7 @@ jobs:
           changes-file: Changes.md
 
   build-macos:
-    if: ${{ github.event.inputs.run_macos }}
+    if: ${{ github.event.inputs.run_macos == 'true' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v3
@@ -299,7 +299,7 @@ jobs:
           changes-file: Changes.md
 
   build-freebsd:
-    if: ${{ github.event.inputs.run_freebsd }}
+    if: ${{ github.event.inputs.run_freebsd == 'true' }}
     runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v3
