@@ -244,8 +244,7 @@ jobs:
             ~/.cargo/git
             target
             key: linux-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml') }}
-          restore-keys: |
-            linux-cargo-
+          restore-keys: linux-cargo-
 
       - name: Cache Rust toolchain
         uses: actions/cache@v3
