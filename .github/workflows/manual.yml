@@ -76,12 +76,13 @@ jobs:
         with:
           path: |
             C:/tools
+            C:/Program Files/PowerShell/Modules/PSUtils
             C:/ProgramData/chocolatey/lib/dos2unix
             C:/ProgramData/chocolatey/lib/7zip.install
             ~/.cargo/bin/sccache
             C:/Users/runneradmin/.cargo/bin/sccache
             C:/Users/runneradmin/.cargo/config.toml
-          key: windows-custom-tools-v3-${{ hashFiles('**/Cargo.lock') }}
+          key: windows-custom-tools-v4-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache vcpkg (Windows)
         uses: actions/cache@v3
@@ -136,7 +137,13 @@ jobs:
           if (-not (Test-Path "C:/tools")){
             New-Item -Path "C:/tools" -ItemType Directory -force
           }
-          # Install specific version of 7zip
+          
+          # Install PSUtils if not already installed
+          if (-not (Get-Module -ListAvailable -Name PSUtils)) {
+            Install-Module -Name PSUtils -Force -Scope AllUsers
+          }
+          
+          # Install other tools as before
           choco install 7zip.install --version=24.9.0 -y --no-progress
           choco install dos2unix -y
 
