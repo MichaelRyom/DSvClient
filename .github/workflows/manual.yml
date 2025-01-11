@@ -68,14 +68,25 @@ jobs:
             ${{ runner.os }}-cargo-${{ matrix.target }}-
             ${{ runner.os }}-cargo-
 
+      - name: Cache custom tools (Windows)
+        uses: actions/cache@v3
+        id: custom-tools-cache
+        with:
+          path: |
+            C:/tools
+            C:/ProgramData/chocolatey/lib/dos2unix
+            ~/.cargo/bin/sccache
+            C:/Users/runneradmin/.cargo/bin/sccache
+            C:/Users/runneradmin/.cargo/config.toml
+          key: ${{ runner.os }}-custom-tools-v2-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Configure Cargo
+        if: steps.custom-tools-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           cargo install sccache
           # Disable incremental compilation when using sccache
           echo "CARGO_INCREMENTAL=0" >> $env:GITHUB_ENV
-          # Remove RUSTC_WRAPPER as it's causing issues
-          # echo "RUSTC_WRAPPER=$(where.exe sccache)" >> $env:GITHUB_ENV
           echo "CARGO_NET_RETRY=10" >> $env:GITHUB_ENV
           echo "CARGO_BUILD_TARGET_DIR=target" >> $env:GITHUB_ENV
           # Add cache configuration
@@ -94,15 +105,6 @@ jobs:
           path: C:/vcpkg/installed
           key: ${{ runner.os }}-vcpkg-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-vcpkg-
-
-      - name: Cache custom tools (Windows)
-        uses: actions/cache@v3
-        id: custom-tools-cache  # Add ID to check cache status
-        with:
-          path: |
-            C:/tools
-            C:/ProgramData/chocolatey/lib/dos2unix
-          key: ${{ runner.os }}-custom-tools-v1-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Download custom tools (Windows)
         if: steps.custom-tools-cache.outputs.cache-hit != 'true'
