@@ -414,9 +414,37 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: freebsd-deps-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          key: freebsd-deps-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
             freebsd-deps-${{ runner.os }}-
+
+      - name: Pre-cache cleanup
+        run: |
+          # Remove lock files and partial directories before caching
+          sudo rm -f /var/lib/apt/lists/lock
+          sudo rm -f /var/cache/apt/archives/lock
+          sudo rm -rf /var/lib/apt/lists/partial/
+          sudo rm -rf /var/cache/apt/archives/partial/
+          # Set permissions for caching
+          sudo chown -R $(id -u):$(id -g) /var/lib/apt/lists/
+          sudo chown -R $(id -u):$(id -g) /var/cache/apt/archives/
+          # Other cleanup
+          sudo rm -rf /tmp/*
+          sudo rm -rf /var/tmp/*
+          sudo rm -rf ~/.cache/cross-rs/*
+        shell: bash
+
+      - name: Cache apt packages
+        uses: actions/cache@v3
+        id: apt-cache
+        with:
+          path: |
+            /var/lib/apt/lists
+            /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-apt-${{ github.ref_name }}-
+            ${{ runner.os }}-apt-
 
       - name: Cache Build Release
         uses: actions/cache@v3
@@ -459,16 +487,6 @@ jobs:
           docker pull ghcr.io/cross-rs/x86_64-unknown-freebsd:0.2.5
           docker save ghcr.io/cross-rs/x86_64-unknown-freebsd:0.2.5 -o $RUNNER_TEMP/freebsd-cross.tar
 
-      - name: Cache apt packages
-        uses: actions/cache@v3
-        with:
-          path: |
-            /var/lib/apt/lists
-            /var/cache/apt/archives
-          key: FreeBSD-apt-${{ github.sha }}
-          restore-keys: |
-            FreeBSD-apt-
-
       - name: Setup Build Environment
         run: |
           # Remove old references
@@ -484,9 +502,11 @@ jobs:
         shell: bash
 
       - name: Install Dependencies (FreeBSD)
-        if: steps.freebsd-deps-cache.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get update
+          # Only update apt if cache was not found
+          if [ "${{ steps.apt-cache.outputs.cache-hit }}" != 'true' ]; then
+            sudo apt-get update
+          fi
           sudo apt-get install -y pkg-config libssl-dev
 
       - name: Install Rust toolchain
@@ -510,6 +530,26 @@ jobs:
           target: x86_64-unknown-freebsd
           args: "--locked --release"
           strip: true
+
+      - name: Post-build cleanup
+        if: always()
+        run: |
+          # Remove lock files and partial directories
+          sudo rm -f /var/lib/apt/lists/lock
+          sudo rm -f /var/cache/apt/archives/lock
+          sudo rm -rf /var/lib/apt/lists/partial/
+          sudo rm -rf /var/cache/apt/archives/partial/
+          # Clean up other directories
+          sudo rm -rf /tmp/*
+          sudo rm -rf /var/tmp/*
+          sudo rm -rf ~/.cargo/.git
+          sudo rm -rf target/debug
+          sudo rm -rf target/release/deps
+          sudo rm -rf target/release/build
+          # Reset permissions
+          sudo chown -R root:root /var/lib/apt/lists/
+          sudo chown -R root:root /var/cache/apt/archives/
+        shell: bash
 
       - name: Publish Release
         uses: houseabsolute/actions-rust-release@v0
