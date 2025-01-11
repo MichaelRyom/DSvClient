@@ -8,6 +8,22 @@ on:
   workflow_dispatch:
     # Inputs the workflow accepts.
     inputs:
+      skip_windows:
+        description: 'Skip Windows build'
+        type: boolean
+        default: false
+      skip_linux:
+        description: 'Skip Linux build'
+        type: boolean
+        default: true
+      skip_macos:
+        description: 'Skip macOS build'
+        type: boolean
+        default: true
+      skip_freebsd:
+        description: 'Skip FreeBSD build'
+        type: boolean
+        default: true
       name:
         # Friendly description to be shown in the UI instead of 'name'
         description: 'DSvC Build workflow'
@@ -18,56 +34,14 @@ on:
         # The data type of the input
         type: string
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  release:
-    name: Release - ${{ matrix.os-name }}
-    strategy:
-      fail-fast: false  # Don't fail fast to see all build issues
-      matrix:
-        include:
-          - os-name: FreeBSD-x86_64
-            runs-on: ubuntu-20.04
-            skip: true
-            target: x86_64-unknown-freebsd
-            setup: |
-              # Remove old references
-              echo "Skipping manual FreeBSD libraries..."
-              sudo rm -rf /usr/local/freebsd
-              sudo rm -rf /usr/cross/freebsd
-
-              # Create cache directory if it doesn't exist
-              mkdir -p ~/.cache/cross-rs
-
-              # Only install the Rust target
-              rustup target add x86_64-unknown-freebsd
-
-          - os-name: Linux-x86_64
-            runs-on: ubuntu-latest
-            skip: true
-            target: x86_64-unknown-linux-gnu
-
-          - os-name: Windows-x86_64
-            runs-on: windows-latest
-            skip: false
-            target: x86_64-pc-windows-msvc
-
-          - os-name: macOS-x86_64
-            runs-on: macos-latest
-            skip: true
-            target: x86_64-apple-darwin
-
-    runs-on: ${{ matrix.runs-on }}
-    env:
-      OPENSSL_STATIC: true
-      PKG_CONFIG_ALLOW_CROSS: "1"
-      OPENSSL_DIR: ${{ matrix.os-name == 'Windows-x86_64' && 'C:/vcpkg/installed/x64-windows-static' || '/usr/lib/ssl' }}
-
+  build-windows:
+    if: ${{ !github.event.inputs.skip_windows }}
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v3
 
       - name: Cache Cargo Dependencies
-        if: matrix.skip == false
         uses: actions/cache@v3
         with:
           path: |
@@ -89,13 +63,12 @@ jobs:
             C:/Users/runneradmin/.cargo/.crates2.json
             C:/Users/runneradmin/.cargo/registry/index
             C:/Users/runneradmin/.cargo/registry/cache
-          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-${{ matrix.target }}-
             ${{ runner.os }}-cargo-
 
       - name: Configure Cargo
-        if: runner.os == 'Windows' && matrix.skip == false
         shell: pwsh
         run: |
           cargo install sccache
@@ -116,7 +89,6 @@ jobs:
           Set-Content -Path "$env:USERPROFILE\.cargo\config.toml" -Value $cargoConfig
 
       - name: Cache vcpkg (Windows)
-        if: runner.os == 'Windows' && matrix.skip == false
         uses: actions/cache@v3
         with:
           path: C:/vcpkg/installed
@@ -124,7 +96,6 @@ jobs:
           restore-keys: ${{ runner.os }}-vcpkg-
 
       - name: Cache custom tools (Windows)
-        if: runner.os == 'Windows' && matrix.skip == false
         uses: actions/cache@v3
         id: custom-tools-cache  # Add ID to check cache status
         with:
@@ -134,7 +105,7 @@ jobs:
           key: ${{ runner.os }}-custom-tools-v1-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Download custom tools (Windows)
-        if: runner.os == 'Windows' && matrix.skip == false && steps.custom-tools-cache.outputs.cache-hit != 'true'
+        if: steps.custom-tools-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           if (-not (Test-Path "C:/tools")){
@@ -147,86 +118,85 @@ jobs:
           Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/bin/unix2dos.exe" -Destination "C:/tools/"
 
       - name: Add tools to PATH (Windows)
-        if: runner.os == 'Windows' && matrix.skip == false
         shell: pwsh
         run: |
           echo "C:/tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Cache Rust toolchain
-        if: matrix.skip == false
         uses: actions/cache@v3
         with:
-          path: ${{ runner.os == 'Windows' && 'C:/Users/runneradmin/.rustup' || '~/.rustup' }}
+          path: C:/Users/runneradmin/.rustup
           key: ${{ runner.os }}-rustup-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-rustup-
 
-      - name: Cache cross compiled artifacts (FreeBSD)
-        if: matrix.os-name == 'FreeBSD-x86_64' && matrix.skip == false
-        uses: actions/cache@v3
-        with:
-          path: target/x86_64-unknown-freebsd
-          key: ${{ matrix.os-name }}-freebsd-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ matrix.os-name }}-freebsd-cargo-
-
-      - name: Cache cross Docker image
-        if: matrix.os-name == 'FreeBSD-x86_64' && matrix.skip == false
-        uses: actions/cache@v3
-        id: cached-image
-        with:
-          path: ${{ runner.temp }}/freebsd-cross.tar
-          key: freebsd-cross-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Load cross Docker image
-        if: matrix.os-name == 'FreeBSD-x86_64' && matrix.skip == false && steps.cached-image.outputs.cache-hit == 'true'
-        run: docker load -i $RUNNER_TEMP/freebsd-cross.tar
-
-      - name: Pull and Save cross Docker image
-        if: matrix.os-name == 'FreeBSD-x86_64' && matrix.skip == false && steps.cached-image.outputs.cache-hit != 'true'
-        run: |
-          docker pull ghcr.io/cross-rs/x86_64-unknown-freebsd:0.2.5
-          docker save ghcr.io/cross-rs/x86_64-unknown-freebsd:0.2.5 -o $RUNNER_TEMP/freebsd-cross.tar
-
       - name: Cache Windows compiled artifacts
-        if: runner.os == 'Windows' && matrix.skip == false
         uses: actions/cache@v3
         with:
           path: target/x86_64-pc-windows-msvc
           key: ${{ runner.os }}-win-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-win-cargo-
 
-      - name: Cache apt packages
-        if: matrix.os-name == 'FreeBSD-x86_64' && matrix.skip == false
-        uses: actions/cache@v3
-        with:
-          path: /var/cache/apt
-          key: freebsd-apt-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: freebsd-apt-
-
-      - name: Setup Build Environment
-        if: matrix.setup != '' && matrix.skip == false
-        run: ${{ matrix.setup }}
-        shell: bash
-
-      # Windows specific step
       - name: Install Dependencies (Windows)
-        if: runner.os == 'Windows' && matrix.skip == false
         shell: pwsh
         run: |
           vcpkg integrate install
           vcpkg install openssl:x64-windows-static
 
-      # macOS specific step
-      - name: Install Dependencies (macOS)
-        if: runner.os == 'macOS' && matrix.skip == false
-        shell: bash
+      - name: Create Changes.md
         run: |
-          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
+          echo "# Changelog" > Changes.md
+          echo "## v0.1.0" >> Changes.md
+          echo "* Initial release" >> Changes.md
+        shell: bash
 
-      # Linux specific step
+      - name: Build Release
+        uses: houseabsolute/actions-rust-cross@v0
+        with:
+          target: x86_64-pc-windows-msvc
+          args: "--locked --release"
+          strip: true
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-pc-windows-msvc
+          profile: minimal
+          override: true
+
+      - name: Publish Release
+        uses: houseabsolute/actions-rust-release@v0
+        with:
+          executable-name: vmware-downloader
+          target: x86_64-pc-windows-msvc
+          changes-file: Changes.md
+
+  build-ubuntu:
+    if: ${{ !github.event.inputs.skip_linux }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Cache Cargo Dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+            ${{ runner.os }}-cargo-
+
+      - name: Cache Rust toolchain
+        uses: actions/cache@v3
+        with:
+          path: ~/.rustup
+          key: ${{ runner.os }}-rustup-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-rustup-
+
       - name: Install Dependencies (Linux)
-        if: runner.os == 'Linux' && matrix.skip == false
         shell: bash
         run: |
           sudo apt-get update
@@ -236,8 +206,167 @@ jobs:
           echo "OPENSSL_INCLUDE_DIR=/usr/include/openssl" >> $GITHUB_ENV
           echo "OPENSSL_DIR=/usr" >> $GITHUB_ENV
 
+      - name: Create Changes.md
+        run: |
+          echo "# Changelog" > Changes.md
+          echo "## v0.1.0" >> Changes.md
+          echo "* Initial release" >> Changes.md
+        shell: bash
+
+      - name: Build Release
+        uses: houseabsolute/actions-rust-cross@v0
+        with:
+          target: x86_64-unknown-linux-gnu
+          args: "--locked --release"
+          strip: true
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-unknown-linux-gnu
+          profile: minimal
+          override: true
+
+      - name: Publish Release
+        uses: houseabsolute/actions-rust-release@v0
+        with:
+          executable-name: vmware-downloader
+          target: x86_64-unknown-linux-gnu
+          changes-file: Changes.md
+
+  build-macos:
+    if: ${{ !github.event.inputs.skip_macos }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Cache Cargo Dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+            ${{ runner.os }}-cargo-
+
+      - name: Cache Rust toolchain
+        uses: actions/cache@v3
+        with:
+          path: ~/.rustup
+          key: ${{ runner.os }}-rustup-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-rustup-
+
+      - name: Install Dependencies (macOS)
+        shell: bash
+        run: |
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
+
+      - name: Create Changes.md
+        run: |
+          echo "# Changelog" > Changes.md
+          echo "## v0.1.0" >> Changes.md
+          echo "* Initial release" >> Changes.md
+        shell: bash
+
+      - name: Build Release
+        uses: houseabsolute/actions-rust-cross@v0
+        with:
+          target: x86_64-apple-darwin
+          args: "--locked --release"
+          strip: true
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-apple-darwin
+          profile: minimal
+          override: true
+
+      - name: Publish Release
+        uses: houseabsolute/actions-rust-release@v0
+        with:
+          executable-name: vmware-downloader
+          target: x86_64-apple-darwin
+          changes-file: Changes.md
+
+  build-freebsd:
+    if: ${{ !github.event.inputs.skip_freebsd }}
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Cache Cargo Dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+            ${{ runner.os }}-cargo-
+
+      - name: Cache Rust toolchain
+        uses: actions/cache@v3
+        with:
+          path: ~/.rustup
+          key: ${{ runner.os }}-rustup-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-rustup-
+
+      - name: Cache cross compiled artifacts (FreeBSD)
+        uses: actions/cache@v3
+        with:
+          path: target/x86_64-unknown-freebsd
+          key: ${{ runner.os }}-freebsd-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-freebsd-cargo-
+
+      - name: Cache cross Docker image
+        uses: actions/cache@v3
+        id: cached-image
+        with:
+          path: ${{ runner.temp }}/freebsd-cross.tar
+          key: freebsd-cross-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Load cross Docker image
+        if: steps.cached-image.outputs.cache-hit == 'true'
+        run: docker load -i $RUNNER_TEMP/freebsd-cross.tar
+
+      - name: Pull and Save cross Docker image
+        if: steps.cached-image.outputs.cache-hit != 'true'
+        run: |
+          docker pull ghcr.io/cross-rs/x86_64-unknown-freebsd:0.2.5
+          docker save ghcr.io/cross-rs/x86_64-unknown-freebsd:0.2.5 -o $RUNNER_TEMP/freebsd-cross.tar
+
+      - name: Cache apt packages
+        uses: actions/cache@v3
+        with:
+          path: /var/cache/apt
+          key: freebsd-apt-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: freebsd-apt-
+
+      - name: Setup Build Environment
+        run: |
+          # Remove old references
+          echo "Skipping manual FreeBSD libraries..."
+          sudo rm -rf /usr/local/freebsd
+          sudo rm -rf /usr/cross/freebsd
+
+          # Create cache directory if it doesn't exist
+          mkdir -p ~/.cache/cross-rs
+
+          # Only install the Rust target
+          rustup target add x86_64-unknown-freebsd
+        shell: bash
+
       - name: Install Dependencies (FreeBSD)
-        if: matrix.os-name == 'FreeBSD-x86_64' && matrix.skip == false
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev
@@ -250,26 +379,23 @@ jobs:
         shell: bash
 
       - name: Build Release
-        if: matrix.skip == false
         uses: houseabsolute/actions-rust-cross@v0
         with:
-          target: ${{ matrix.target }}
+          target: x86_64-unknown-freebsd
           args: "--locked --release"
           strip: true
 
       - name: Install Rust toolchain
-        if: matrix.skip == false
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-          target: ${{ matrix.target }}
+          target: x86_64-unknown-freebsd
           profile: minimal
           override: true
 
       - name: Publish Release
-        if: matrix.skip == false
         uses: houseabsolute/actions-rust-release@v0
         with:
           executable-name: vmware-downloader
-          target: ${{ matrix.target }}
+          target: x86_64-unknown-freebsd
           changes-file: Changes.md
