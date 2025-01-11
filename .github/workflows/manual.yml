@@ -107,11 +107,11 @@ jobs:
           echo "CARGO_BUILD_TARGET_DIR=target" >> $env:GITHUB_ENV
           # Add cache configuration
           $cargoConfig = @"
-[build]
-target-dir = "target"
-[net]
-retry = 10
-"@
+          [build]
+          target-dir = "target"
+          [net]
+          retry = 10
+          "@
           New-Item -Path "$env:USERPROFILE\.cargo" -ItemType Directory -Force
           Set-Content -Path "$env:USERPROFILE\.cargo\config.toml" -Value $cargoConfig
 
