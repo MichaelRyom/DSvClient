@@ -8,22 +8,22 @@ on:
   workflow_dispatch:
     # Inputs the workflow accepts.
     inputs:
-      skip_windows:
-        description: 'Skip Windows build'
+      run_windows:
+        description: 'Run Windows build'
+        type: boolean
+        default: true
+      run_linux:
+        description: 'Run Linux build'
         type: boolean
         default: false
-      skip_linux:
-        description: 'Skip Linux build'
+      run_macos:
+        description: 'Run macOS build'
         type: boolean
-        default: true
-      skip_macos:
-        description: 'Skip macOS build'
+        default: false
+      run_freebsd:
+        description: 'Run FreeBSD build'
         type: boolean
-        default: true
-      skip_freebsd:
-        description: 'Skip FreeBSD build'
-        type: boolean
-        default: true
+        default: false
       name:
         # Friendly description to be shown in the UI instead of 'name'
         description: 'DSvC Build workflow'
@@ -36,7 +36,7 @@ on:
 
 jobs:
   build-windows:
-    if: ${{ !github.event.inputs.skip_windows }}
+    if: ${{ github.event.inputs.run_windows }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v3
@@ -172,7 +172,7 @@ jobs:
           changes-file: Changes.md
 
   build-ubuntu:
-    if: ${{ !github.event.inputs.skip_linux }}
+    if: ${{ github.event.inputs.run_linux }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -236,7 +236,7 @@ jobs:
           changes-file: Changes.md
 
   build-macos:
-    if: ${{ !github.event.inputs.skip_macos }}
+    if: ${{ github.event.inputs.run_macos }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v3
@@ -297,7 +297,7 @@ jobs:
           changes-file: Changes.md
 
   build-freebsd:
-    if: ${{ !github.event.inputs.skip_freebsd }}
+    if: ${{ github.event.inputs.run_freebsd }}
     runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v3
