@@ -400,6 +400,8 @@ jobs:
   build-freebsd:
     if: ${{ github.event.inputs.run_freebsd == 'true' }}
     runs-on: ubuntu-20.04
+    env:
+      CARGO_HOME: ~/.cargo
     steps:
       - uses: actions/checkout@v3
 
