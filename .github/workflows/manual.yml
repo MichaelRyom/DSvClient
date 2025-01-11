@@ -81,6 +81,59 @@ jobs:
             C:/Users/runneradmin/.cargo/config.toml
           key: windows-custom-tools-v2-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Cache vcpkg (Windows)
+        uses: actions/cache@v3
+        with:
+          path: C:/vcpkg/installed
+          key: windows-vcpkg-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-vcpkg-
+
+      - name: Add tools to PATH (Windows)
+        shell: pwsh
+        run: |
+          echo "C:/tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Cache Rust toolchain
+        uses: actions/cache@v3
+        with:
+          path: C:/Users/runneradmin/.rustup
+          key: windows-rustup-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-rustup-
+            
+      - name: Install Dependencies (Windows)
+        shell: pwsh
+        run: |
+          vcpkg integrate install
+          vcpkg install openssl:x64-windows-static
+      
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-pc-windows-msvc
+          profile: minimal
+          override: true
+
+      - name: Create Changes.md
+        run: |
+          echo "# Changelog" > Changes.md
+          echo "## v0.1.0" >> Changes.md
+          echo "* Initial release" >> Changes.md
+        shell: bash
+
+      - name: Download custom tools (Windows)
+        if: steps.custom-tools-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "C:/tools")){
+            New-Item -Path "C:/tools" -ItemType Directory -force
+          }
+          choco install dos2unix 7zip.install -y --no-progress --debug --verbose
+          # Copy directly from chocolatey shim location
+          #Get-childitem "C:/ProgramData/chocolatey/lib/dos2unix/tools/" -recurse
+          Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/bin/dos2unix.exe" -Destination "C:/tools/"
+          Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/bin/unix2dos.exe" -Destination "C:/tools/"
+
       - name: Configure Cargo
         if: steps.custom-tools-cache.outputs.cache-hit != 'true'
         shell: pwsh
@@ -100,51 +153,6 @@ jobs:
           New-Item -Path "$env:USERPROFILE\.cargo" -ItemType Directory -Force
           Set-Content -Path "$env:USERPROFILE\.cargo\config.toml" -Value $cargoConfig
 
-      - name: Cache vcpkg (Windows)
-        uses: actions/cache@v3
-        with:
-          path: C:/vcpkg/installed
-          key: windows-vcpkg-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: windows-vcpkg-
-
-      - name: Download custom tools (Windows)
-        if: steps.custom-tools-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          if (-not (Test-Path "C:/tools")){
-            New-Item -Path "C:/tools" -ItemType Directory -force
-          }
-          choco install dos2unix 7zip.install -y --no-progress --debug --verbose
-          # Copy directly from chocolatey shim location
-          #Get-childitem "C:/ProgramData/chocolatey/lib/dos2unix/tools/" -recurse
-          Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/bin/dos2unix.exe" -Destination "C:/tools/"
-          Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/bin/unix2dos.exe" -Destination "C:/tools/"
-
-      - name: Add tools to PATH (Windows)
-        shell: pwsh
-        run: |
-          echo "C:/tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Cache Rust toolchain
-        uses: actions/cache@v3
-        with:
-          path: C:/Users/runneradmin/.rustup
-          key: windows-rustup-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: windows-rustup-
-
-      - name: Install Dependencies (Windows)
-        shell: pwsh
-        run: |
-          vcpkg integrate install
-          vcpkg install openssl:x64-windows-static
-
-      - name: Create Changes.md
-        run: |
-          echo "# Changelog" > Changes.md
-          echo "## v0.1.0" >> Changes.md
-          echo "* Initial release" >> Changes.md
-        shell: bash
-
       - name: Build Release
         uses: houseabsolute/actions-rust-cross@v0
         with:
@@ -162,14 +170,6 @@ jobs:
             cmd /c "`"$vsDevCmd`" amd64 && dumpbin /headers $binPath | findstr 'debug'"
             cmd /c "`"$vsDevCmd`" amd64 && editbin /INCREMENTAL:NO $binPath"
           }
-
-      - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          target: x86_64-pc-windows-msvc
-          profile: minimal
-          override: true
 
       - name: Publish Release
         uses: houseabsolute/actions-rust-release@v0
