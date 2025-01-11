@@ -264,6 +264,14 @@ jobs:
           echo "OPENSSL_INCLUDE_DIR=/usr/include/openssl" >> $GITHUB_ENV
           echo "OPENSSL_DIR=/usr" >> $GITHUB_ENV
 
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-unknown-linux-gnu
+          profile: minimal
+          override: true
+
       - name: Create Changes.md
         run: |
           echo "# Changelog" > Changes.md
@@ -277,14 +285,6 @@ jobs:
           target: x86_64-unknown-linux-gnu
           args: "--locked --release"
           strip: true
-
-      - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          target: x86_64-unknown-linux-gnu
-          profile: minimal
-          override: true
 
       - name: Publish Release
         uses: houseabsolute/actions-rust-release@v0
@@ -330,14 +330,7 @@ jobs:
           echo "## v0.1.0" >> Changes.md
           echo "* Initial release" >> Changes.md
         shell: bash
-
-      - name: Build Release
-        uses: houseabsolute/actions-rust-cross@v0
-        with:
-          target: x86_64-apple-darwin
-          args: "--locked --release"
-          strip: true
-
+      
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
@@ -345,6 +338,13 @@ jobs:
           target: x86_64-apple-darwin
           profile: minimal
           override: true
+
+      - name: Build Release
+        uses: houseabsolute/actions-rust-cross@v0
+        with:
+          target: x86_64-apple-darwin
+          args: "--locked --release"
+          strip: true
 
       - name: Publish Release
         uses: houseabsolute/actions-rust-release@v0
@@ -427,6 +427,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev
 
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-unknown-freebsd
+          profile: minimal
+          override: true
+
       - name: Create Changes.md
         run: |
           echo "# Changelog" > Changes.md
@@ -440,14 +448,6 @@ jobs:
           target: x86_64-unknown-freebsd
           args: "--locked --release"
           strip: true
-
-      - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          target: x86_64-unknown-freebsd
-          profile: minimal
-          override: true
 
       - name: Publish Release
         uses: houseabsolute/actions-rust-release@v0
