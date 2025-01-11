@@ -417,27 +417,28 @@ jobs:
 
       - name: Setup System Dependencies
         run: |
-          # Create backup of system SSL files
+          # Create backup of system SSL files with proper permissions
           sudo mkdir -p /opt/ssl_backup
-          sudo cp -r /usr/lib/x86_64-linux-gnu/libssl* /opt/ssl_backup/
-          sudo cp -r /usr/lib/x86_64-linux-gnu/libcrypto* /opt/ssl_backup/
-          sudo cp -r /usr/include/openssl /opt/ssl_backup/
+          cd /opt/ssl_backup
+          sudo tar czf ssl_libs.tar.gz \
+            /usr/lib/x86_64-linux-gnu/libssl* \
+            /usr/lib/x86_64-linux-gnu/libcrypto* \
+            /usr/include/openssl
+          sudo chown $(id -u):$(id -g) ssl_libs.tar.gz
+        shell: bash
 
       - name: Cache System Libraries
         uses: actions/cache@v3
         id: system-libs-cache
         with:
-          path: /opt/ssl_backup
-          key: freebsd-ssl-${{ runner.os }}-${{ hashFiles('/usr/lib/x86_64-linux-gnu/libssl*', '/usr/lib/x86_64-linux-gnu/libcrypto*', '/usr/include/openssl/**') }}
-          restore-keys: |
-            freebsd-ssl-${{ runner.os }}-
+          path: /opt/ssl_backup/ssl_libs.tar.gz
+          key: freebsd-ssl-${{ hashFiles('/usr/lib/x86_64-linux-gnu/libssl*', '/usr/lib/x86_64-linux-gnu/libcrypto*') }}
 
       - name: Restore System Libraries
         if: steps.system-libs-cache.outputs.cache-hit == 'true'
         run: |
-          sudo cp -r /opt/ssl_backup/libssl* /usr/lib/x86_64-linux-gnu/
-          sudo cp -r /opt/ssl_backup/libcrypto* /usr/lib/x86_64-linux-gnu/
-          sudo cp -r /opt/ssl_backup/openssl /usr/include/
+          cd /
+          sudo tar xzf /opt/ssl_backup/ssl_libs.tar.gz
         shell: bash
 
       - name: Pre-cache cleanup
