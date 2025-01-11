@@ -212,10 +212,26 @@ jobs:
         run: |
           $binPath = "target/x86_64-pc-windows-msvc/release/vmware-downloader.exe"
           if (Test-Path $binPath) {
+            # Get original size
+            $originalSize = (Get-Item $binPath).Length
+            Write-Host "Original binary size: $([math]::Round($originalSize/1KB, 2)) KB"
+            
+            # Backup original
             copy-item $binPath "$binPath.unstripped"
+            
+            # Strip and optimize
             $vsDevCmd = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -find "**\vcvarsall.bat"
             cmd /c "`"$vsDevCmd`" amd64 && dumpbin /headers $binPath | findstr 'debug'"
             cmd /c "`"$vsDevCmd`" amd64 && editbin /INCREMENTAL:NO $binPath"
+            
+            # Get stripped size
+            $strippedSize = (Get-Item $binPath).Length
+            Write-Host "Stripped binary size: $([math]::Round($strippedSize/1KB, 2)) KB"
+            
+            # Calculate and show reduction
+            $reduction = $originalSize - $strippedSize
+            $percentReduction = ($reduction / $originalSize) * 100
+            Write-Host "Size reduction: $([math]::Round($reduction/1KB, 2)) KB ($([math]::Round($percentReduction, 2))%)"
           }
 
       - name: Verify Binary
