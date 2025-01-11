@@ -112,7 +112,7 @@ jobs:
             target/x86_64-pc-windows-msvc/release
             target/release
             Changes.md
-          key: windows-release-${{ github.sha }}
+          key: windows-release-${{ hashFiles('target/x86_64-pc-windows-msvc/release/**', 'target/release/**') }}
           restore-keys: |
             windows-release-
 
@@ -287,7 +287,7 @@ jobs:
           path: |
             target/x86_64-unknown-linux-gnu/release
             target/release
-          key: ubuntu-release-${{ github.sha }}
+          key: ubuntu-release-${{ hashFiles('target/x86_64-unknown-linux-gnu/release/**', 'target/release/**') }}
           restore-keys: |
             ubuntu-release-
 
@@ -411,7 +411,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: freebsd-deps-${{ runner.os }}-${{ github.sha }}
+          key: freebsd-deps-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/rust-toolchain.toml') }}
           restore-keys: |
             freebsd-deps-${{ runner.os }}-
 
@@ -428,7 +428,7 @@ jobs:
         id: system-libs-cache
         with:
           path: /opt/ssl_backup
-          key: freebsd-ssl-${{ runner.os }}-${{ github.sha }}
+          key: freebsd-ssl-${{ runner.os }}-${{ hashFiles('/usr/lib/x86_64-linux-gnu/libssl*', '/usr/lib/x86_64-linux-gnu/libcrypto*', '/usr/include/openssl/**') }}
           restore-keys: |
             freebsd-ssl-${{ runner.os }}-
 
@@ -463,7 +463,7 @@ jobs:
           path: |
             /var/lib/apt/lists
             /var/cache/apt/archives
-          key: ${{ runner.os }}-apt-${{ github.sha }}
+          key: ${{ runner.os }}-apt-${{ hashFiles('/var/lib/apt/lists/*', '/var/cache/apt/archives/*.deb') }}
           restore-keys: |
             ${{ runner.os }}-apt-${{ github.ref_name }}-
             ${{ runner.os }}-apt-
@@ -474,7 +474,7 @@ jobs:
           path: |
             target/x86_64-unknown-freebsd/release
             target/release
-          key: freebsd-release-${{ github.sha }}
+          key: freebsd-release-${{ hashFiles('target/x86_64-unknown-freebsd/release/**', 'target/release/**') }}
           restore-keys: |
             freebsd-release-
 
