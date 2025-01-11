@@ -243,8 +243,23 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-            key: linux-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml') }}
-          restore-keys: linux-cargo-
+            target/x86_64-unknown-linux-gnu
+            target/x86_64-unknown-linux-gnu/release
+            target/release
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            ${{ runner.os }}-cargo-
+
+      - name: Cache Build Release
+        uses: actions/cache@v3
+        with:
+          path: |
+            target/x86_64-unknown-linux-gnu/release
+            target/release
+          key: ubuntu-release-${{ github.sha }}
+          restore-keys: |
+            ubuntu-release-
 
       - name: Cache Rust toolchain
         uses: actions/cache@v3
@@ -403,9 +418,12 @@ jobs:
       - name: Cache apt packages
         uses: actions/cache@v3
         with:
-          path: /var/cache/apt
-          key: freebsd-apt-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: freebsd-apt-
+          path: |
+            /var/lib/apt/lists
+            /var/cache/apt/archives
+          key: FreeBSD-apt-${{ github.sha }}
+          restore-keys: |
+            FreeBSD-apt-
 
       - name: Setup Build Environment
         run: |
