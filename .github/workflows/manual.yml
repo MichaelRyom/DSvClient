@@ -411,9 +411,16 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: freebsd-deps-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/rust-toolchain.toml') }}
+            target/x86_64-unknown-freebsd
+            target/x86_64-unknown-freebsd/release
+            target/release
+            target/debug
+            target/.rustc_info.json
+            target/CACHEDIR.TAG
+          key: freebsd-cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/rust-toolchain.toml', '.cargo/config*') }}
           restore-keys: |
-            freebsd-deps-${{ runner.os }}-
+            freebsd-cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+            freebsd-cargo-${{ runner.os }}-
 
       - name: Setup System Dependencies
         run: |
