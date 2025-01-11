@@ -103,7 +103,19 @@ jobs:
           path: C:/Users/runneradmin/.rustup
           key: windows-rustup-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: windows-rustup-
-            
+
+      - name: Cache Release Artifacts
+        id: cache-release
+        uses: actions/cache@v3
+        with:
+          path: |
+            target/x86_64-pc-windows-msvc/release
+            target/release
+            Changes.md
+          key: windows-release-${{ github.sha }}
+          restore-keys: |
+            windows-release-
+
       - name: Install Dependencies (Windows)
         shell: pwsh
         run: |
@@ -115,7 +127,7 @@ jobs:
           echo "OPENSSL_LIB_DIR=C:/vcpkg/installed/x64-windows-static/lib" | Out-File -FilePath $env:GITHUB_ENV -Append
           echo "OPENSSL_INCLUDE_DIR=C:/vcpkg/installed/x64-windows-static/include" | Out-File -FilePath $env:GITHUB_ENV -Append
           echo "CMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake" | Out-File -FilePath $env:GITHUB_ENV -Append
-      
+
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
@@ -125,6 +137,7 @@ jobs:
           override: true
 
       - name: Create Changes.md
+        if: steps.cache-release.outputs.cache-hit != 'true'
         run: |
           echo "# Changelog" > Changes.md
           echo "## v0.1.0" >> Changes.md
@@ -135,27 +148,25 @@ jobs:
         if: steps.custom-tools-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
+          # Create tools directory first
           if (-not (Test-Path "C:/tools")){
-            New-Item -Path "C:/tools" -ItemType Directory -force
+            New-Item -Path "C:/tools" -ItemType Directory -Force
+            New-Item -Path "C:/tools/psutils" -ItemType Directory -Force
           }
-          
-          # Download and install psutils
-          $psutilsPath = "C:/tools/psutils"
-          if (-not (Test-Path $psutilsPath)) {
-            New-Item -Path $psutilsPath -ItemType Directory -Force
-            $tempZip = "C:/tools/psutils.zip"
-            Invoke-WebRequest -Uri "https://github.com/lukesampson/psutils/archive/master.zip" -OutFile $tempZip
-            Expand-Archive -Path $tempZip -DestinationPath $psutilsPath -Force
-            Remove-Item $tempZip
-            # Copy all ps1 files to the main directory
-            Get-ChildItem -Path "$psutilsPath/psutils-master" -Filter "*.ps1" | 
-              ForEach-Object { Copy-Item $_.FullName -Destination $psutilsPath }
-            Remove-Item "$psutilsPath/psutils-master" -Recurse -Force
-          }
-          
-          # Install other tools as before
+
+          # Install tools first so they're available in PATH
           choco install 7zip.install --version=24.9.0 -y --no-progress
           choco install dos2unix -y
+
+          # Download and install psutils after other tools
+          $psutilsPath = "C:/tools/psutils"
+          $tempZip = "C:/tools/psutils.zip"
+          Invoke-WebRequest -Uri "https://github.com/lukesampson/psutils/archive/master.zip" -OutFile $tempZip
+          Expand-Archive -Path $tempZip -DestinationPath $psutilsPath -Force
+          Remove-Item $tempZip
+          Get-ChildItem -Path "$psutilsPath/psutils-master" -Filter "*.ps1" |
+            ForEach-Object { Copy-Item $_.FullName -Destination $psutilsPath }
+          Remove-Item "$psutilsPath/psutils-master" -Recurse -Force
 
       - name: Configure Cargo
         if: steps.custom-tools-cache.outputs.cache-hit != 'true'
@@ -174,24 +185,25 @@ jobs:
           Set-Content -Path "$env:USERPROFILE\.cargo\config.toml" -Value $cargoConfig
 
       - name: Build Release
+        if: steps.cache-release.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           Write-Host "Current directory: $(Get-Location)"
           Write-Host "Environment variables:"
           Get-ChildItem env:
-          
+
           # Create target directory if it doesn't exist
           New-Item -Path "target" -ItemType Directory -Force
-          
+
           # Build with explicit target directory
           $env:CARGO_TARGET_DIR = Join-Path (Get-Location) "target"
           cargo build --release --target x86_64-pc-windows-msvc --verbose
-          
+
           Write-Host "`nSearching for binary..."
           Get-ChildItem -Path "." -Recurse -Filter "vmware-downloader*" | ForEach-Object {
               Write-Host "Found: $($_.FullName)"
           }
-          
+
           # Look in both possible locations
           $possiblePaths = @(
               "target/x86_64-pc-windows-msvc/release/vmware-downloader.exe",
@@ -199,7 +211,7 @@ jobs:
               "target/release/vmware-downloader.exe",
               "./target/release/vmware-downloader.exe"
           )
-          
+
           $binPath = $null
           foreach ($path in $possiblePaths) {
               if (Test-Path $path) {
@@ -207,7 +219,7 @@ jobs:
                   break
               }
           }
-          
+
           if ($binPath) {
               Write-Host "`nBinary found at: $binPath"
               Get-Item $binPath | Select-Object FullName, Length, LastWriteTime
@@ -241,6 +253,7 @@ jobs:
           }
 
       - name: Publish Release
+        if: steps.cache-release.outputs.cache-hit != 'true'
         uses: houseabsolute/actions-rust-release@v0
         with:
           executable-name: vmware-downloader
@@ -361,7 +374,7 @@ jobs:
           echo "## v0.1.0" >> Changes.md
           echo "* Initial release" >> Changes.md
         shell: bash
-      
+
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
