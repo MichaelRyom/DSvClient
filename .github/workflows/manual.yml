@@ -400,8 +400,6 @@ jobs:
   build-freebsd:
     if: ${{ github.event.inputs.run_freebsd == 'true' }}
     runs-on: ubuntu-20.04
-    env:
-      CARGO_HOME: ~/.cargo
     steps:
       - uses: actions/checkout@v3
 
@@ -410,10 +408,10 @@ jobs:
         id: freebsd-deps-cache
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-            ~/.cargo/config*
+            /home/runner/.cargo/registry
+            /home/runner/.cargo/git
+            /home/runner/.cargo/bin
+            /home/runner/.cargo/config*
             target
             target/x86_64-unknown-freebsd
             target/x86_64-unknown-freebsd/release
