@@ -100,6 +100,12 @@ jobs:
         run: |
           vcpkg integrate install
           vcpkg install openssl:x64-windows-static
+          # Set OpenSSL environment variables for Windows
+          echo "OPENSSL_DIR=C:/vcpkg/installed/x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "OPENSSL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "OPENSSL_LIB_DIR=C:/vcpkg/installed/x64-windows-static/lib" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "OPENSSL_INCLUDE_DIR=C:/vcpkg/installed/x64-windows-static/include" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "CMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake" | Out-File -FilePath $env:GITHUB_ENV -Append
       
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
