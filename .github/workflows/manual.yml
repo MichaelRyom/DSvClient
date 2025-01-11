@@ -253,7 +253,7 @@ jobs:
           }
 
       - name: Publish Release
-        if: steps.cache-release.outputs.cache-hit != 'true'
+        #if: steps.cache-release.outputs.cache-hit != 'true'
         uses: houseabsolute/actions-rust-release@v0
         with:
           executable-name: vmware-downloader
@@ -606,7 +606,7 @@ jobs:
         shell: bash
 
       - name: Publish Release
-        if: steps.cache-build.outputs.cache-hit != 'true'
+        #if: steps.cache-build.outputs.cache-hit != 'true'
         uses: houseabsolute/actions-rust-release@v0
         with:
           executable-name: vmware-downloader
