@@ -540,19 +540,43 @@ jobs:
           profile: minimal
           override: true
 
-      - name: Create Changes.md
-        run: |
-          echo "# Changelog" > Changes.md
-          echo "## v0.1.0" >> Changes.md
-          echo "* Initial release" >> Changes.md
-        shell: bash
+      - name: Cache Build Outputs
+        uses: actions/cache@v3
+        id: cache-build
+        with:
+          path: |
+            target/x86_64-unknown-freebsd/release/
+            target/release/
+            target/x86_64-unknown-freebsd/release/deps/
+            target/x86_64-unknown-freebsd/release/build/
+            target/release/deps/
+            target/release/build/
+            Changes.md
+          key: freebsd-build-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'src/**/*.rs') }}
+          restore-keys: |
+            freebsd-build-
 
       - name: Build Release
+        if: steps.cache-build.outputs.cache-hit != 'true'
         uses: houseabsolute/actions-rust-cross@v0
         with:
           target: x86_64-unknown-freebsd
           args: "--locked --release"
           strip: true
+
+      - name: Verify Build Artifacts
+        run: |
+          ls -la target/x86_64-unknown-freebsd/release/ || true
+          ls -la target/release/ || true
+        shell: bash
+
+      - name: Create Changes.md
+        if: steps.cache-build.outputs.cache-hit != 'true'
+        run: |
+          echo "# Changelog" > Changes.md
+          echo "## v0.1.0" >> Changes.md
+          echo "* Initial release" >> Changes.md
+        shell: bash
 
       - name: Post-build cleanup
         if: always()
@@ -575,6 +599,7 @@ jobs:
         shell: bash
 
       - name: Publish Release
+        if: steps.cache-build.outputs.cache-hit != 'true'
         uses: houseabsolute/actions-rust-release@v0
         with:
           executable-name: vmware-downloader
