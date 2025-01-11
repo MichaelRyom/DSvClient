@@ -38,6 +38,10 @@ jobs:
   build-windows:
     if: ${{ github.event.inputs.run_windows == 'true' }}
     runs-on: windows-latest
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      CARGO_NET_RETRY: 10
     steps:
       - uses: actions/checkout@v3
 
@@ -53,21 +57,12 @@ jobs:
             # Cache build artifacts
             target
             target/x86_64-pc-windows-msvc
-            target/x86_64-pc-windows-msvc/release/deps
-            target/x86_64-pc-windows-msvc/release/build
-            target/x86_64-pc-windows-msvc/release/.fingerprint
-            # Cache compiled dependencies
-            target/release/deps
-            target/release/.fingerprint
-            # Cache registry
-            C:/Users/runneradmin/.cargo/.crates.toml
-            C:/Users/runneradmin/.cargo/.crates2.json
-            C:/Users/runneradmin/.cargo/registry/index
-            C:/Users/runneradmin/.cargo/registry/cache
-          key: windows-cargo-all-v1-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml') }}
+            target/x86_64-pc-windows-msvc/release
+            target/release
+          key: ${{ runner.os }}-msvc-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/rust-toolchain.toml', '.cargo/config*') }}
           restore-keys: |
-            windows-cargo-all-v1-
-            windows-cargo-all-
+            ${{ runner.os }}-msvc-cargo-${{ hashFiles('**/Cargo.lock') }}
+            ${{ runner.os }}-msvc-cargo-
 
       - name: Cache custom tools (Windows)
         uses: actions/cache@v3
@@ -154,11 +149,17 @@ jobs:
           Set-Content -Path "$env:USERPROFILE\.cargo\config.toml" -Value $cargoConfig
 
       - name: Build Release
-        uses: houseabsolute/actions-rust-cross@v0
-        with:
-          target: x86_64-pc-windows-msvc
-          args: "--locked --release"
-          strip: false  # Disable stripping in cross action
+        shell: pwsh
+        run: |
+          cargo build --release --target x86_64-pc-windows-msvc
+          # Debug output
+          Get-ChildItem -Path "target" -Recurse -Filter "vmware-downloader*"
+          if (Test-Path "target/x86_64-pc-windows-msvc/release/vmware-downloader.exe") {
+            Write-Host "Binary found at expected location"
+          } else {
+            Write-Error "Binary not found at expected location"
+            exit 1
+          }
 
       - name: Strip Binary (Windows)
         shell: pwsh
@@ -169,6 +170,20 @@ jobs:
             $vsDevCmd = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -find "**\vcvarsall.bat"
             cmd /c "`"$vsDevCmd`" amd64 && dumpbin /headers $binPath | findstr 'debug'"
             cmd /c "`"$vsDevCmd`" amd64 && editbin /INCREMENTAL:NO $binPath"
+          }
+
+      - name: Verify Binary
+        shell: pwsh
+        run: |
+          $paths = @(
+            "target/x86_64-pc-windows-msvc/release/vmware-downloader.exe",
+            "target/release/vmware-downloader.exe"
+          )
+          foreach ($path in $paths) {
+            if (Test-Path $path) {
+              Write-Host "Found binary at: $path"
+              Get-Item $path | Select-Object FullName, Length, LastWriteTime
+            }
           }
 
       - name: Publish Release
