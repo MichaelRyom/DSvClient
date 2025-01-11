@@ -77,10 +77,11 @@ jobs:
           path: |
             C:/tools
             C:/ProgramData/chocolatey/lib/dos2unix
+            C:/ProgramData/chocolatey/lib/7zip.install
             ~/.cargo/bin/sccache
             C:/Users/runneradmin/.cargo/bin/sccache
             C:/Users/runneradmin/.cargo/config.toml
-          key: windows-custom-tools-v2-${{ hashFiles('**/Cargo.lock') }}
+          key: windows-custom-tools-v3-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache vcpkg (Windows)
         uses: actions/cache@v3
@@ -135,25 +136,20 @@ jobs:
           if (-not (Test-Path "C:/tools")){
             New-Item -Path "C:/tools" -ItemType Directory -force
           }
-          choco install dos2unix 7zip.install -y --no-progress --debug --verbose
-          # Copy directly from chocolatey shim location
-          #Get-childitem "C:/ProgramData/chocolatey/lib/dos2unix/tools/" -recurse
-          Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/bin/dos2unix.exe" -Destination "C:/tools/"
-          Copy-Item "C:/ProgramData/chocolatey/lib/dos2unix/tools/bin/unix2dos.exe" -Destination "C:/tools/"
+          # Install specific version of 7zip
+          choco install 7zip.install --version=24.9.0 -y --no-progress
+          choco install dos2unix -y
 
       - name: Configure Cargo
         if: steps.custom-tools-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           cargo install sccache
-          # Disable incremental compilation when using sccache
-          echo "CARGO_INCREMENTAL=0" >> $env:GITHUB_ENV
-          echo "CARGO_NET_RETRY=10" >> $env:GITHUB_ENV
-          echo "CARGO_BUILD_TARGET_DIR=target" >> $env:GITHUB_ENV
           # Add cache configuration
           $cargoConfig = @"
           [build]
-          target-dir = "target"
+          target-dir = "./target"
+
           [net]
           retry = 10
           "@
@@ -167,25 +163,47 @@ jobs:
           Write-Host "Environment variables:"
           Get-ChildItem env:
           
-          Write-Host "`nChecking vcpkg installation:"
-          Get-ChildItem "C:/vcpkg/installed/x64-windows-static" -Recurse | Select-Object FullName
+          # Create target directory if it doesn't exist
+          New-Item -Path "target" -ItemType Directory -Force
           
-          Write-Host "`nBuilding project..."
+          # Build with explicit target directory
+          $env:CARGO_TARGET_DIR = Join-Path (Get-Location) "target"
           cargo build --release --target x86_64-pc-windows-msvc --verbose
           
           Write-Host "`nSearching for binary..."
-          Get-ChildItem -Path "target" -Recurse -Filter "vmware-downloader*" | ForEach-Object {
+          Get-ChildItem -Path "." -Recurse -Filter "vmware-downloader*" | ForEach-Object {
               Write-Host "Found: $($_.FullName)"
           }
           
-          $binPath = "target/x86_64-pc-windows-msvc/release/vmware-downloader.exe"
-          if (Test-Path $binPath) {
+          # Look in both possible locations
+          $possiblePaths = @(
+              "target/x86_64-pc-windows-msvc/release/vmware-downloader.exe",
+              "./target/x86_64-pc-windows-msvc/release/vmware-downloader.exe",
+              "target/release/vmware-downloader.exe",
+              "./target/release/vmware-downloader.exe"
+          )
+          
+          $binPath = $null
+          foreach ($path in $possiblePaths) {
+              if (Test-Path $path) {
+                  $binPath = $path
+                  break
+              }
+          }
+          
+          if ($binPath) {
               Write-Host "`nBinary found at: $binPath"
               Get-Item $binPath | Select-Object FullName, Length, LastWriteTime
+              # Ensure binary is in the expected location
+              $targetPath = "target/x86_64-pc-windows-msvc/release/vmware-downloader.exe"
+              if ($binPath -ne $targetPath) {
+                  New-Item -Path (Split-Path $targetPath) -ItemType Directory -Force
+                  Copy-Item $binPath $targetPath -Force
+              }
           } else {
-              Write-Host "`nChecking parent directory structure:"
-              Get-ChildItem -Path "target" -Recurse | Select-Object FullName
-              Write-Error "Binary not found at expected location: $binPath"
+              Write-Host "`nChecking directory structure:"
+              Get-ChildItem -Path "." -Recurse | Select-Object FullName
+              Write-Error "Binary not found in any expected location"
               exit 1
           }
 
