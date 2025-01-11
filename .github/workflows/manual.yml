@@ -408,15 +408,37 @@ jobs:
         id: freebsd-deps-cache
         with:
           path: |
-            /usr/lib/x86_64-linux-gnu/libssl*
-            /usr/lib/x86_64-linux-gnu/libcrypto*
-            /usr/include/openssl
             ~/.cargo/registry
             ~/.cargo/git
             target
           key: freebsd-deps-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
             freebsd-deps-${{ runner.os }}-
+
+      - name: Setup System Dependencies
+        run: |
+          # Create backup of system SSL files
+          sudo mkdir -p /opt/ssl_backup
+          sudo cp -r /usr/lib/x86_64-linux-gnu/libssl* /opt/ssl_backup/
+          sudo cp -r /usr/lib/x86_64-linux-gnu/libcrypto* /opt/ssl_backup/
+          sudo cp -r /usr/include/openssl /opt/ssl_backup/
+
+      - name: Cache System Libraries
+        uses: actions/cache@v3
+        id: system-libs-cache
+        with:
+          path: /opt/ssl_backup
+          key: freebsd-ssl-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            freebsd-ssl-${{ runner.os }}-
+
+      - name: Restore System Libraries
+        if: steps.system-libs-cache.outputs.cache-hit == 'true'
+        run: |
+          sudo cp -r /opt/ssl_backup/libssl* /usr/lib/x86_64-linux-gnu/
+          sudo cp -r /opt/ssl_backup/libcrypto* /usr/lib/x86_64-linux-gnu/
+          sudo cp -r /opt/ssl_backup/openssl /usr/include/
+        shell: bash
 
       - name: Pre-cache cleanup
         run: |
