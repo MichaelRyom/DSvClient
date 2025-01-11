@@ -76,12 +76,13 @@ jobs:
         with:
           path: |
             C:/tools
+            C:/tools/psutils
             C:/ProgramData/chocolatey/lib/dos2unix
             C:/ProgramData/chocolatey/lib/7zip.install
             ~/.cargo/bin/sccache
             C:/Users/runneradmin/.cargo/bin/sccache
             C:/Users/runneradmin/.cargo/config.toml
-          key: windows-custom-tools-v3-${{ hashFiles('**/Cargo.lock') }}
+          key: windows-custom-tools-v4-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache vcpkg (Windows)
         uses: actions/cache@v3
@@ -94,6 +95,7 @@ jobs:
         shell: pwsh
         run: |
           echo "C:/tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "C:/tools/psutils" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Cache Rust toolchain
         uses: actions/cache@v3
@@ -136,7 +138,22 @@ jobs:
           if (-not (Test-Path "C:/tools")){
             New-Item -Path "C:/tools" -ItemType Directory -force
           }
-          # Install specific version of 7zip
+          
+          # Download and install psutils
+          $psutilsPath = "C:/tools/psutils"
+          if (-not (Test-Path $psutilsPath)) {
+            New-Item -Path $psutilsPath -ItemType Directory -Force
+            $tempZip = "C:/tools/psutils.zip"
+            Invoke-WebRequest -Uri "https://github.com/lukesampson/psutils/archive/master.zip" -OutFile $tempZip
+            Expand-Archive -Path $tempZip -DestinationPath $psutilsPath -Force
+            Remove-Item $tempZip
+            # Copy all ps1 files to the main directory
+            Get-ChildItem -Path "$psutilsPath/psutils-master" -Filter "*.ps1" | 
+              ForEach-Object { Copy-Item $_.FullName -Destination $psutilsPath }
+            Remove-Item "$psutilsPath/psutils-master" -Recurse -Force
+          }
+          
+          # Install other tools as before
           choco install 7zip.install --version=24.9.0 -y --no-progress
           choco install dos2unix -y
 
@@ -373,16 +390,30 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Cache Cargo Dependencies
+      - name: Cache FreeBSD Dependencies
         uses: actions/cache@v3
+        id: freebsd-deps-cache
         with:
           path: |
+            /usr/lib/x86_64-linux-gnu/libssl*
+            /usr/lib/x86_64-linux-gnu/libcrypto*
+            /usr/include/openssl
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: freebsd-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml') }}
+          key: freebsd-deps-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            freebsd-cargo-
+            freebsd-deps-${{ runner.os }}-
+
+      - name: Cache Build Release
+        uses: actions/cache@v3
+        with:
+          path: |
+            target/x86_64-unknown-freebsd/release
+            target/release
+          key: freebsd-release-${{ github.sha }}
+          restore-keys: |
+            freebsd-release-
 
       - name: Cache Rust toolchain
         uses: actions/cache@v3
@@ -440,6 +471,7 @@ jobs:
         shell: bash
 
       - name: Install Dependencies (FreeBSD)
+        if: steps.freebsd-deps-cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev
