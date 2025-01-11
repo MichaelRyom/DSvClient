@@ -99,10 +99,21 @@ jobs:
         shell: pwsh
         run: |
           cargo install sccache
-          echo "CARGO_INCREMENTAL=1" >> $env:GITHUB_ENV
+          # Disable incremental compilation when using sccache
+          echo "CARGO_INCREMENTAL=0" >> $env:GITHUB_ENV
+          # Remove RUSTC_WRAPPER as it's causing issues
+          # echo "RUSTC_WRAPPER=$(where.exe sccache)" >> $env:GITHUB_ENV
           echo "CARGO_NET_RETRY=10" >> $env:GITHUB_ENV
-          echo "RUSTC_WRAPPER=$(where.exe sccache)" >> $env:GITHUB_ENV
           echo "CARGO_BUILD_TARGET_DIR=target" >> $env:GITHUB_ENV
+          # Add cache configuration
+          $cargoConfig = @"
+[build]
+target-dir = "target"
+[net]
+retry = 10
+"@
+          New-Item -Path "$env:USERPROFILE\.cargo" -ItemType Directory -Force
+          Set-Content -Path "$env:USERPROFILE\.cargo\config.toml" -Value $cargoConfig
 
       - name: Cache vcpkg (Windows)
         if: runner.os == 'Windows' && matrix.skip == false
