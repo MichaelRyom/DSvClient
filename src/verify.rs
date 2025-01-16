@@ -50,7 +50,7 @@ impl VerificationReport {
         if !self.checksum_mismatches.is_empty() {
             warn!("\nChecksum Mismatches ({}):", self.checksum_mismatches.len());
             for (path, expected) in &self.checksum_mismatches {
-                warn!("  {} (Expected: {})", path.display(), expected);
+                warn!("Expected: {}", path.display());
             }
         }
 
@@ -64,6 +64,7 @@ impl VerificationReport {
         info!("XML files processed: {}", self.processed_xmls.len());
         info!("ZIP files processed: {}", self.processed_zips.len());
         info!("Total VIB files checked: {}", self.files_checked);
+        info!("Files missing on disk: {}", self.vib_files_missing.len());  // Add this line
         info!("Total VIB files missing: {}", self.vib_files_missing.len());
         info!("Files with checksum mismatches: {}", self.checksum_mismatches.len());
         info!("Files with errors: {}", self.error_files.len());
@@ -104,7 +105,8 @@ impl AsyncReport {
 
     async fn add_missing(&self, path: PathBuf) {
         let mut report = self.inner.lock().await;
-        report.vib_files_missing.push(path);
+        report.vib_files_missing.push(path.clone());
+        warn!("Missing VIB file: {}", path.display());
     }
 
     async fn add_mismatch(&self, path: PathBuf, checksum: String) {
@@ -252,7 +254,63 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
         .build::<_, Empty<Bytes>>(https);
     let processor = ProcessManager::new(client, path.to_path_buf());
     
-    // First populate metadata cache if empty
+    // First scan and count all files by type
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        match fs::read_dir(&dir).await {
+            Ok(mut entries) => {
+                while let Some(entry) = entries.next_entry().await? {
+                    let path = entry.path();
+                    if path.is_file() {
+                        match path.extension().and_then(|e| e.to_str()) {
+                            Some("xml") => {
+                                match fs::metadata(&path).await {
+                                    Ok(_) => report.add_xml(path.clone()).await,
+                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                        report.add_missing(path.clone()).await;
+                                    }
+                                    Err(e) => {
+                                        report.add_error(path.clone(), format!("Access error: {}", e)).await;
+                                    }
+                                }
+                            }
+                            Some("zip") => {
+                                match fs::metadata(&path).await {
+                                    Ok(_) => report.add_zip(path.clone()).await,
+                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                        report.add_missing(path.clone()).await;
+                                    }
+                                    Err(e) => {
+                                        report.add_error(path.clone(), format!("Access error: {}", e)).await;
+                                    }
+                                }
+                            }
+                            Some("vib") => {
+                                match fs::metadata(&path).await {
+                                    Ok(_) => (), // Will be processed later
+                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                        report.add_missing(path.clone()).await;
+                                    }
+                                    Err(e) => {
+                                        report.add_error(path.clone(), format!("Access error: {}", e)).await;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    } else if path.is_dir() {
+                        stack.push(path);
+                    }
+                }
+            }
+            Err(e) => {
+                report.add_error(dir.clone(), format!("Directory access error: {}", e)).await;
+                continue;
+            }
+        }
+    }
+
+    // Now populate metadata cache if empty
     {
         let cache = verifier.metadata_cache.lock().await;
         if cache.is_empty() {
@@ -273,7 +331,18 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
                                         if let FileType::Vib = file.file_type {
                                             if let (Some(checksum), Some(checksum_type)) = (file.checksum, file.checksum_type) {
                                                 if let Source::Path(vib_path) = file.source {
-                                                    verifier.cache_vib_info(vib_path, checksum, checksum_type).await;
+                                                    // Check if file exists before caching metadata
+                                                    match fs::metadata(&vib_path).await {
+                                                        Ok(_) => {
+                                                            verifier.cache_vib_info(vib_path, checksum, checksum_type).await;
+                                                        }
+                                                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                                            report.add_missing(vib_path.clone()).await;
+                                                        }
+                                                        Err(e) => {
+                                                            report.add_error(vib_path, format!("Access error: {}", e)).await;
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -301,7 +370,15 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
             let path = entry.path();
             if path.is_file() {
                 if path.extension().and_then(|e| e.to_str()) == Some("vib") {
-                    vib_paths.push(path);
+                    match fs::metadata(&path).await {
+                        Ok(_) => vib_paths.push(path),
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            report.add_missing(path).await;
+                        }
+                        Err(e) => {
+                            report.add_error(path.clone(), format!("Access error: {}", e)).await;
+                        }
+                    }
                 }
             } else if path.is_dir() {
                 stack.push(path);
@@ -314,6 +391,10 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
     let mut tasks = Vec::new();
 
     for vib_path in vib_paths {
+        if !vib_path.exists() {
+            report.add_missing(vib_path).await;
+            continue; // Skip verification of missing files
+        }
         let permit = semaphore.clone().acquire_owned().await?;
         let verifier = verifier.clone();
         let report = report.clone();  // Now cloning Arc<AsyncReport>

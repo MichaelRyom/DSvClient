@@ -31,6 +31,7 @@ pub struct FileInfo {
     pub checksum: Option<String>,
     pub checksum_type: Option<String>,
     pub file_type: FileType,
+    pub in_zip: bool, // <-- ensure this is actually present
     //pub size: Option<u64>,
 }
 
@@ -236,6 +237,7 @@ impl ProcessManager {
                     checksum: None,
                     checksum_type: None,
                     file_type: FileType::Xml,
+                    in_zip: false,
                     //size: None,
                 });
             }
@@ -259,6 +261,7 @@ impl ProcessManager {
                         } else { 
                             FileType::Other(url) 
                         },
+                        in_zip: false,
                         //size: None,
                     });
                 }
@@ -277,6 +280,7 @@ impl ProcessManager {
                         checksum: Some(vib.checksum),
                         checksum_type: Some(vib.checksum_type),
                         file_type: FileType::Vib,
+                        in_zip: false,
                         //size: None,
                     });
                 }
@@ -315,6 +319,7 @@ impl ProcessManager {
                                 checksum: Some(vib.checksum),
                                 checksum_type: Some(vib.checksum_type),
                                 file_type: FileType::Vib,
+                                in_zip: true,
                                 //size: None,
                             });
                         }
@@ -375,6 +380,7 @@ impl ProcessManager {
             checksum,
             checksum_type,
             file_type: self.get_file_type(source),
+            in_zip: false,
             //size: None,
         })
     }

@@ -1,6 +1,6 @@
 use crate::config::AppConfig;
 use crate::parser::{Vendor, XmlParser};
-use crate::process::{FileType, ProcessManager, Source};
+use crate::process::{FileInfo, FileType, ProcessManager, Source};
 use crate::verify::VerificationManager;
 use anyhow::Result;
 use bytes::Bytes;
@@ -20,7 +20,15 @@ use tokio::sync::{Mutex, Semaphore}; // Change to use tokio's Mutex // Use renam
 
 type DownloadTracker = Arc<Mutex<HashSet<PathBuf>>>;
 // Add a new type for tracking processed files
-type ProcessedFiles = Arc<Mutex<HashSet<String>>>;
+#[derive(Default)]
+struct FileTracker {
+    processed_paths: HashSet<String>,
+    xml_files: HashSet<PathBuf>,
+    zip_files: HashSet<PathBuf>,
+    vib_files: HashSet<PathBuf>,
+}
+
+type ProcessedFiles = Arc<Mutex<FileTracker>>;
 
 #[derive(Debug, Default, Clone)]
 pub struct DownloadReport {
@@ -79,17 +87,18 @@ impl DownloadReport {
             }
         }
 
+        // Update these lines to use total counters instead of HashSet lengths
         info!("XML files processed: {}", self.total_xml_processed);
         info!("ZIP files processed: {}", self.total_zip_processed);
-        info!("VIB files checked: {}", self.total_vib_processed);
         info!("Total files downloaded: {}", self.files_downloaded);
+        info!("      Files with checksum mismatches: {}", self.checksum_mismatches.len());
+
+
         info!("Total files checked: {}", self.processed_files);
-        // Calculate skipped files correctly
-        let total_processed = self.total_xml_processed + self.total_zip_processed + self.total_vib_processed;
-        info!("Files skipped: {}", total_processed.saturating_sub(self.files_downloaded));
-        info!("Files missing on disk: {}", self.files_missing.len());
-        info!("Files with checksum mismatches: {}",self.checksum_mismatches.len());
-        info!("Files with access errors: {}", self.access_errors.len());
+        info!("      Files skipped: {}", self.files_skipped);
+        info!("      Files with access errors: {}", self.access_errors.len());
+        //info!("Files missing on disk: {}", self.files_missing.len());
+
     }
 }
 
@@ -144,7 +153,7 @@ impl Downloader {
             verifier: Arc::new(VerificationManager::new(config.clone())),
             xml_parser: Arc::new(XmlParser::new()),
             download_semaphore: Arc::new(Semaphore::new(config.download.max_concurrent_downloads)),
-            processed_files: Arc::new(Mutex::new(HashSet::new())),
+            processed_files: Arc::new(Mutex::new(FileTracker::default())),
             //config: Arc::new(config),
             download_report: Arc::new(Mutex::new(DownloadReport::default())), // Initialize the field
         }
@@ -152,31 +161,28 @@ impl Downloader {
 
     // Add helper method to check if file was processed
     async fn is_file_processed(&self, relative_path: &str) -> bool {
-        let processed = self.processed_files.lock().await;
-        processed.contains(relative_path)
+        let tracker = self.processed_files.lock().await;
+        tracker.processed_paths.contains(relative_path)
     }
 
     // Add helper method to mark file as processed
     async fn mark_file_processed(&self, relative_path: String) {
-        let mut processed = self.processed_files.lock().await;
-        processed.insert(relative_path);
-    }
-
-/*     async fn parse_vendors(&self, url: &str, content: &str) -> Result<Vec<(String, String)>> {
-        let mut parser = DepotParser::new(content);
-        let mut vendor_urls = Vec::new();
-
-        if let Ok(vendors) = parser.parse_vendors() {
-            for vendor in vendors {
-                let vendor_url = format!("{}/{}/{}", url, vendor.relative_path, vendor.indexfile);
-                debug!("Found vendor {} at {}", vendor.name, vendor_url);
-                vendor_urls.push((vendor.name.clone(), vendor_url.clone()));
+        let mut tracker = self.processed_files.lock().await;
+        if !tracker.processed_paths.contains(&relative_path) {
+            tracker.processed_paths.insert(relative_path.clone());
+            let target_path = self.base_path.join(&relative_path);
+            
+            // Track by file type
+            if relative_path.ends_with(".xml") {
+                tracker.xml_files.insert(target_path);
+            } else if relative_path.ends_with(".zip") {
+                tracker.zip_files.insert(target_path);
+            } else if relative_path.ends_with(".vib") {
+                tracker.vib_files.insert(target_path);
             }
         }
-
-        Ok(vendor_urls)
     }
- */
+
     pub async fn process_repository(&self, url: &str) -> Result<()> {
         info!("Processing repository: {}", url);
 
@@ -337,44 +343,43 @@ impl Downloader {
         let files = self.processor.process_source(source).await?;
         info!("Found {} files to process", files.len());
 
-        // Update total files to process
-        let mut report = self.download_report.lock().await;
-        report.processed_files += files.len();
-        drop(report);
-
-        // Reset counters at start of processing
-        {
-            let mut report = self.download_report.lock().await;
-            report.total_xml_processed = 0;
-            report.total_zip_processed = 0;
-            report.total_vib_processed = 0;
-        }
-
-        // Count and track files before processing
+        // Count and track files before any processing
         {
             let mut report = self.download_report.lock().await;
             for file in &files {
                 match file.file_type {
                     FileType::Xml => {
                         report.total_xml_processed += 1;
+                        let target = self.base_path.join(&file.relative_path);
+                        if !target.exists() {
+                            report.files_missing.push(target.clone());
+                            debug!("Adding missing XML file: {}", target.display());
+                        }
+                        report.processed_xmls.insert(target);
                     }
                     FileType::Zip => {
                         report.total_zip_processed += 1;
-                    }
-                    FileType::Vib => {
                         let target = self.base_path.join(&file.relative_path);
                         if !target.exists() {
-                            // Use add_missing_file instead of direct push
-                            drop(report); // Drop the lock before the async call
-                            self.add_missing_file(target).await;
-                            report = self.download_report.lock().await; // Re-acquire lock
+                            report.files_missing.push(target.clone());
+                            debug!("Adding missing ZIP file: {}", target.display());
                         }
+                        report.processed_zips.insert(target);
+                    }
+                    FileType::Vib => {
                         report.total_vib_processed += 1;
+                        let target = self.base_path.join(&file.relative_path);
+                        if !file.in_zip && !target.exists() {
+                            report.files_missing.push(target.clone());
+                            debug!("Adding missing VIB file: {}", target.display());
+                        }
+                        if target.exists() {
+                            report.downloaded_vibs.insert(target);
+                        }
                     }
                     _ => {}
                 }
             }
-            report.processed_files = report.total_xml_processed + report.total_zip_processed + report.total_vib_processed;
         }
 
         // Use a timeout for the entire batch of tasks
@@ -695,6 +700,12 @@ impl Downloader {
 
         tokio::fs::write(target_path, bytes).await?;
 
+        if !target_path.exists() {
+            let mut report = self.download_report.lock().await;
+            report.files_missing.push(target_path.to_path_buf());
+            debug!("Adding missing file during download: {}", target_path.display());
+        }
+
 /*         // Only update downloaded count for new files
         if !target_path.exists() {
             let mut report = self.download_report.lock().await;
@@ -761,44 +772,45 @@ impl Downloader {
 
     pub async fn get_download_report(&self) -> DownloadReport {
         let mut report = self.download_report.lock().await.clone();
+        let tracker = self.processed_files.lock().await;
+        
+        // Check for missing files across all tracked files
+        for path in tracker.xml_files.iter()
+            .chain(tracker.zip_files.iter())
+            .chain(tracker.vib_files.iter())
+            .chain(report.processed_xmls.iter())
+            .chain(report.processed_zips.iter())
+            .chain(report.downloaded_vibs.iter())
+        {
+            if !path.exists() && !report.files_missing.contains(path) {
+                report.files_missing.push(path.clone());
+                debug!("Adding missing file during report generation: {}", path.display());
+            }
+        }
 
-        // Include processed files in totals
-        //report.files_downloaded = report.processed_xmls.len()
-        //    + report.processed_zips.len()
-        //    + report.downloaded_vibs.len();
-
-        report.files_skipped = self
-            .processed_files
-            .lock()
-            .await
-            .len()
-            .saturating_sub(report.files_downloaded);
-
+        report.processed_files = tracker.processed_paths.len();
+        report.files_skipped = tracker.processed_paths.len().saturating_sub(report.files_downloaded);
+        
         report
     }
 
     async fn update_download_stats(&self, path: &Path) {
         let mut downloaded = self.downloaded.lock().await;
-        downloaded.insert(path.to_path_buf());
+        let is_new = downloaded.insert(path.to_path_buf());
 
-        let mut report = self.download_report.lock().await;
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            match ext {
-                "xml" => {
-                    report.processed_xmls.insert(path.to_path_buf());
-                }
-                "zip" => {
-                    report.processed_zips.insert(path.to_path_buf());
-                }
-                "vib" => {
-                    report.downloaded_vibs.insert(path.to_path_buf());
-                }
-                _ => {}
-            }
-        }
-        // Only update download count for new files
-        if !path.exists() {
+        if is_new {
+            let mut report = self.download_report.lock().await;
             report.files_downloaded += 1;
+            
+            // We don't increment totals here since they're counted during process_metadata
+            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                match ext {
+                    "xml" => { report.processed_xmls.insert(path.to_path_buf()); }
+                    "zip" => { report.processed_zips.insert(path.to_path_buf()); }
+                    "vib" => { report.downloaded_vibs.insert(path.to_path_buf()); }
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -819,6 +831,9 @@ impl Downloader {
 
     async fn add_missing_file(&self, path: PathBuf) {
         let mut report = self.download_report.lock().await;
-        report.files_missing.push(path);
+        if !report.files_missing.contains(&path) {
+            debug!("Adding missing file: {}", path.display());
+            report.files_missing.push(path);
+        }
     }
 }
