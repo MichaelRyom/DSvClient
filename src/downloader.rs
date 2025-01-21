@@ -185,6 +185,12 @@ impl Downloader {
 
     pub async fn process_repository(&self, url: &str) -> Result<()> {
         info!("Processing repository: {}", url);
+        
+        // Count main XML file
+        {
+            let mut report = self.download_report.lock().await;
+            report.total_xml_processed += 1;
+        }
 
         // Get base URL without filename
         let base_url = url.rsplit_once('/').map(|(base, _)| base).unwrap_or(url);
@@ -194,6 +200,11 @@ impl Downloader {
             Ok(index_content) => {
                 // Try to process as a vendor list first (like addon-main)
                 if let Ok(vendors) = self.xml_parser.parse_vendor_list(&index_content) {
+                    // Count each vendor XML
+                    {
+                        let mut report = self.download_report.lock().await;
+                        report.total_xml_processed += vendors.len();
+                    }
                     // Process vendors concurrently
                     let mut vendor_tasks = Vec::new();
                     for vendor in vendors {
@@ -287,7 +298,7 @@ impl Downloader {
 
     async fn read_sources_file(&self) -> Result<Vec<SourceEntry>> {
         let sources_file = PathBuf::from("sources.toml");
-        if !sources_file.exists() {
+        if (!sources_file.exists()) {
             return Err(anyhow::anyhow!("sources.toml file not found"));
         }
 
@@ -346,39 +357,11 @@ impl Downloader {
         // Count and track files before any processing
         {
             let mut report = self.download_report.lock().await;
+            let meta_path = self.base_path.join(&relative_base);
+            report.total_zip_processed += 1;
+            report.processed_zips.insert(meta_path);
             for file in &files {
-                match file.file_type {
-                    FileType::Xml => {
-                        report.total_xml_processed += 1;
-                        let target = self.base_path.join(&file.relative_path);
-                        if !target.exists() {
-                            report.files_missing.push(target.clone());
-                            debug!("Adding missing XML file: {}", target.display());
-                        }
-                        report.processed_xmls.insert(target);
-                    }
-                    FileType::Zip => {
-                        report.total_zip_processed += 1;
-                        let target = self.base_path.join(&file.relative_path);
-                        if !target.exists() {
-                            report.files_missing.push(target.clone());
-                            debug!("Adding missing ZIP file: {}", target.display());
-                        }
-                        report.processed_zips.insert(target);
-                    }
-                    FileType::Vib => {
-                        report.total_vib_processed += 1;
-                        let target = self.base_path.join(&file.relative_path);
-                        if !file.in_zip && !target.exists() {
-                            report.files_missing.push(target.clone());
-                            debug!("Adding missing VIB file: {}", target.display());
-                        }
-                        if target.exists() {
-                            report.downloaded_vibs.insert(target);
-                        }
-                    }
-                    _ => {}
-                }
+                report.total_vib_processed += 1;
             }
         }
 
@@ -411,43 +394,12 @@ impl Downloader {
             let target_path = self.base_path.join(&full_relative_path);
             info!("Target path: {}", target_path.display());
 
-            match file.file_type {
-                FileType::Xml => {
-                    // Track XML file immediately when first encountered
-                    let mut report = self.download_report.lock().await;
-                    report.processed_xmls.insert(target_path.clone());
-/*                     if !target_path.exists() {
-                        report.files_downloaded += 1;
-                    } */
-                    drop(report);
-                    
-                    // Process the XML file
-                    let this = self.clone();
-                    let target_path_clone = target_path.clone();
-                    if let Source::Http(url) = &file.source {
-                        if let Err(e) = this.download_file(url, &target_path_clone).await {
-                            warn!("Failed to download XML {}: {}", url, e);
-                        }
-                    }
-                }
-                FileType::Zip => {
-                    // Track ZIP file immediately when first encountered
-                    let mut report = self.download_report.lock().await;
-                    report.processed_zips.insert(target_path.clone());
-/*                     if !target_path.exists() {
-                        report.files_downloaded += 1;
-                    } */
-                    drop(report);
+            // Treat discovered files as VIB
+            let mut report = self.download_report.lock().await;
+            report.total_vib_processed += 1;
+            drop(report);
 
-                    // Process the ZIP file
-                    let this = self.clone();
-                    let target_path_clone = target_path.clone();
-                    if let Source::Http(url) = &file.source {
-                        if let Err(e) = this.download_file(url, &target_path_clone).await {
-                            warn!("Failed to download ZIP {}: {}", url, e);
-                        }
-                    }
-                }
+            match file.file_type {
                 FileType::Vib => {
                     // Track VIB file immediately when first encountered
                     let mut report = self.download_report.lock().await;
