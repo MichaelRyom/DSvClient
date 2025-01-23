@@ -23,7 +23,7 @@ use log::debug;
 
 // Increase parallelism and optimize buffer sizes
 //const VERIFICATION_CHUNK_SIZE: usize = 256 * 1024; // 256KB is optimal for most filesystems
-const MAX_CONCURRENT_FILES: usize = 1000; // Process many files simultaneously
+//const MAX_CONCURRENT_FILES: usize = 1000; // Process many files simultaneously
 //const THREAD_SLEEP_MS: u64 = 0; // Remove artificial delay
 
 #[derive(Debug, Default, Clone)]
@@ -265,6 +265,10 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
         .build::<_, Empty<Bytes>>(https);
     let processor = ProcessManager::new(client, path.to_path_buf());
     
+    // Load max concurrent files from config
+    let max_concurrent_files = verifier.config.verification.max_concurrent_files;
+    let semaphore = Arc::new(Semaphore::new(max_concurrent_files));
+
     // First scan and count all files by type
     let mut stack = vec![path.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -398,7 +402,7 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
     }
 
     // Process VIBs in parallel using cached metadata
-    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_FILES));
+    // Use the config value instead of constant
     let mut tasks = Vec::new();
 
     for vib_path in vib_paths {
