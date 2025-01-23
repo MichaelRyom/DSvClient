@@ -3,7 +3,7 @@ use bytes::Bytes;
 use http_body_util::Empty;
 use hyper_tls::HttpsConnector;
 use hyper_util::client::legacy::Client;
-use log::{error, info, warn, LevelFilter};
+use log::{debug, error, info, warn, LevelFilter};
 use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode, WriteLogger};
 use std::fs::File;
 use std::path::PathBuf;
@@ -38,11 +38,11 @@ async fn main() -> Result<()> {
             anyhow::anyhow!("No download path provided")
         })?;
 
-    // Set up logging
+    // Set up logging first
     let log_file = File::create(download_path.join("download_errors.log"))?;
     CombinedLogger::init(vec![
         TermLogger::new(
-            LevelFilter::Info,
+            LevelFilter::Debug, // Change to Debug level temporarily
             Config::default(),
             TerminalMode::Mixed,
             ColorChoice::Auto,
@@ -50,14 +50,15 @@ async fn main() -> Result<()> {
         WriteLogger::new(LevelFilter::Warn, Config::default(), log_file),
     ])?;
 
+    // Then load config
+    let config = AppConfig::load_or_default();
+    debug!("Config loaded: {:?}", config);
+
     // Check for sources.toml instead of sources
     if !PathBuf::from("sources.toml").exists() {
         error!("sources.toml file not found");
         fail_and_exit(&start_time, "sources.toml file not found");
     }
-
-    // Load config first
-    let config = AppConfig::load_or_default();
 
     // Check for --verify flag but exclude it from being treated as a path
     let verify = args.iter().any(|arg| arg == "--verify");
@@ -130,6 +131,18 @@ async fn main() -> Result<()> {
 
     let elapsed = start_time.elapsed();
     info!("Execution completed in: {:?}", elapsed);
+    
+    // Output config settings
+    info!("\nConfig settings used:");
+    info!("  Verification:");
+    info!("    Chunk size: {} bytes", config.verification.chunk_size);
+    info!("    Max concurrent files: {}", config.verification.max_concurrent_files);
+    info!("    Max concurrent verifications: {}", config.verification.max_concurrent_verifications);
+    info!("  Download:");
+    info!("    Max concurrent downloads: {}", config.download.max_concurrent_downloads);
+    info!("    Buffer size: {} bytes", config.download.buffer_size);
+    info!("  General:");
+    info!("    Thread sleep: {} ms", config.general.thread_sleep_ms);
 
     Ok(())
 }
