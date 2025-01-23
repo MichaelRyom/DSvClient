@@ -34,7 +34,6 @@ type ProcessedFiles = Arc<Mutex<FileTracker>>;
 pub struct DownloadReport {
     pub files_downloaded: usize,
     pub files_skipped: usize,
-    pub failed_downloads: Vec<String>,
     pub processed_files: usize,
     pub processed_xmls: HashSet<PathBuf>,
     pub processed_zips: HashSet<PathBuf>,
@@ -42,21 +41,16 @@ pub struct DownloadReport {
     pub checksum_mismatches: Vec<(PathBuf, String, String)>, // (path, expected, actual)
     pub access_errors: Vec<(PathBuf, String)>, // Add new field for access errors
     pub files_missing: Vec<PathBuf>, // Add new field for missing files
-    pub total_xml_processed: usize,  // Add counter for total XML files found
-    pub total_zip_processed: usize,  // Add counter for total ZIP files found
+    pub total_xml_processed: usize,  // Add counter for total XML files found - So compiling works for now, remove later
+    pub xml_processed: HashSet<String>,  // Changed from usize to HashSet<String>
+    pub total_zip_processed: usize,  // Add counter for total ZIP files found - So compiling works for now, remove later
+    pub zip_processed: HashSet<String>,  // Changed from usize to HashSet<String>
     pub total_vib_processed: usize,  // Add counter for total VIB files found
 }
 
 impl DownloadReport {
     pub fn print_summary(&self) {
         info!("\nDownload Summary:");
-
-        if (!self.failed_downloads.is_empty()) {
-            warn!("\nFailed Downloads ({}):", self.failed_downloads.len());
-            for url in &self.failed_downloads {
-                warn!("  {}", url);
-            }
-        }
 
         if (!self.checksum_mismatches.is_empty()) {
             warn!(
@@ -88,17 +82,15 @@ impl DownloadReport {
         }
 
         // Update these lines to use total counters instead of HashSet lengths
-        info!("XML files processed: {}", self.total_xml_processed);
-        info!("ZIP files processed: {}", self.total_zip_processed);
-        info!("Total files downloaded: {}", self.files_downloaded);
-        info!("      Files with checksum mismatches: {}", self.checksum_mismatches.len());
-
-
-        info!("Total files checked: {}", self.processed_files);
-        info!("      Files skipped: {}", self.files_skipped);
-        info!("      Files with access errors: {}", self.access_errors.len());
-        //info!("Files missing on disk: {}", self.files_missing.len());
-
+        info!("XML files processed: {}", self.xml_processed.len());
+        info!("ZIP files processed: {}", self.zip_processed.len());
+        info!("Files checked: {}", self.processed_files);
+        info!("Files skipped (no issues with): {}", self.files_skipped);
+        info!("Files successfully downloaded: {}", self.files_downloaded);
+        info!("Errors:");
+        info!("  - Access errors: {}", self.access_errors.len());
+        //info!("  - Checksum mismatches: {}", self.checksum_mismatches.len()); // Does not make sense to count this
+        info!("  - Download failures: {}", self.files_missing.len());
     }
 }
 
@@ -189,8 +181,9 @@ impl Downloader {
         // Count main XML file
         {
             let mut report = self.download_report.lock().await;
-            report.total_xml_processed += 1;
+            report.xml_processed.insert(url.to_string());  // Store the URL instead of incrementing
         }
+
 
         // Get base URL without filename
         let base_url = url.rsplit_once('/').map(|(base, _)| base).unwrap_or(url);
@@ -201,10 +194,10 @@ impl Downloader {
                 // Try to process as a vendor list first (like addon-main)
                 if let Ok(vendors) = self.xml_parser.parse_vendor_list(&index_content) {
                     // Count each vendor XML
-                    {
+                    /*{
                         let mut report = self.download_report.lock().await;
-                        report.total_xml_processed += vendors.len();
-                    }
+                        report.total_xml_processed += 1;
+                    }*/
                     // Process vendors concurrently
                     let mut vendor_tasks = Vec::new();
                     for vendor in vendors {
@@ -247,6 +240,14 @@ impl Downloader {
         match self.download_xml(vendor_url).await {
             Ok(vendor_content) => {
                 if let Ok(metadata_list) = self.xml_parser.parse_metadata_list(&vendor_content) {
+                    info!("Processing vendor XML: {}", vendor_url);
+
+                    // Count each vendor XML
+                    {
+                        let mut report = self.download_report.lock().await;
+                        report.xml_processed.insert(vendor_url.to_string());  // Store the URL instead of incrementing
+                    }
+
                     // Process all metadata concurrently with rate limiting
                     let mut metadata_tasks = Vec::new();
                     for metadata in metadata_list {
@@ -358,7 +359,7 @@ impl Downloader {
         {
             let mut report = self.download_report.lock().await;
             let meta_path = self.base_path.join(&relative_base);
-            report.total_zip_processed += 1;
+            report.zip_processed.insert(url.to_string());  // Store URL instead of incrementing
             report.processed_zips.insert(meta_path);
             for file in &files {
                 report.total_vib_processed += 1;
@@ -741,7 +742,14 @@ impl Downloader {
         }
 
         report.processed_files = tracker.processed_paths.len();
-        report.files_skipped = tracker.processed_paths.len().saturating_sub(report.files_downloaded);
+        
+        // Calculate skipped files by subtracting all non-skipped files
+        let non_skipped = report.files_downloaded // Successfully downloaded
+            + report.files_missing.len()          // Failed to download
+            + report.access_errors.len()          // Access errors
+            + report.checksum_mismatches.len();   // Checksum mismatches
+
+        report.files_skipped = report.processed_files.saturating_sub(non_skipped);
         
         report
     }

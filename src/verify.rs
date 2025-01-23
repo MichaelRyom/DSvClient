@@ -50,7 +50,7 @@ impl VerificationReport {
         if !self.checksum_mismatches.is_empty() {
             warn!("\nChecksum Mismatches ({}):", self.checksum_mismatches.len());
             for (path, expected) in &self.checksum_mismatches {
-                warn!("Expected: {}", path.display());
+                warn!("Checksum mismatch for {} Expected: {}", path.display(), expected);
             }
         }
 
@@ -61,6 +61,7 @@ impl VerificationReport {
             }
         }
 
+        /*
         info!("XML files processed: {}", self.processed_xmls.len());
         info!("ZIP files processed: {}", self.processed_zips.len());
         info!("Total VIB files checked: {}", self.files_checked);
@@ -68,6 +69,15 @@ impl VerificationReport {
         info!("Total VIB files missing: {}", self.vib_files_missing.len());
         info!("Files with checksum mismatches: {}", self.checksum_mismatches.len());
         info!("Files with errors: {}", self.error_files.len());
+        */
+
+        info!("XML files processed: {}", self.processed_xmls.len());
+        info!("ZIP files processed: {}", self.processed_zips.len());
+        info!("Files on disk checked: {}", self.files_checked);
+        info!("Errors:");
+        info!("  - Access errors: {}", self.error_files.len());
+        info!("  - Checksum mismatches: {}", self.checksum_mismatches.len());
+        info!("  - Files missing on disk: {}", self.vib_files_missing.len());
     }
 
     fn add_error(&mut self, path: PathBuf, error: String) {
@@ -89,6 +99,7 @@ impl AsyncReport {
     }
 
     async fn add_xml(&self, path: PathBuf) {
+        info!("Processing XML: {}", path.display());
         let mut report = self.inner.lock().await;
         report.processed_xmls.insert(path);
     }
