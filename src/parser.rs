@@ -84,6 +84,38 @@ pub struct VibFile {
     pub checksum_type: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct VcsaManifest {
+    #[serde(rename = "file")]
+    pub files: Vec<VcsaFile>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VcsaFile {
+    pub name: String,
+    pub size: String,
+    pub sha256sum: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VcsaPackage {
+    pub name: String,
+    pub version: String,
+    pub arch: String,
+    pub size: String,
+    pub location: String,
+    #[serde(rename = "checksum256")]
+    pub checksum: Option<VcsaChecksum>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VcsaChecksum {
+    #[serde(rename = "type")]
+    pub checksum_type: String,
+    #[serde(rename = "$value")]
+    pub value: String,
+}
+
 pub struct DepotParser<'a> {
     reader: Reader<&'a [u8]>,
 }
@@ -433,4 +465,77 @@ impl XmlParser {
 /*     pub fn parse_metadata_response(&self, content: &str) -> Result<MetadataResponse> {
         Ok(quick_xml::de::from_str(content)?)
     } */
+
+    pub fn parse_vcsa_manifest(&self, content: &str) -> Result<VcsaManifest> {
+        Ok(quick_xml::de::from_str(content)?)
+    }
+
+    pub fn parse_vcsa_packages(&self, content: &str) -> Result<Vec<VcsaPackage>> {
+        let mut reader = Reader::from_str(content);
+        let mut buf = Vec::new();
+        let mut packages = Vec::new();
+        let mut current_package = None;
+        let mut current_field = None;
+        let mut in_checksum = false;
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) => match e.name().as_ref() {
+                    b"package" => {
+                        current_package = Some(VcsaPackage {
+                            name: String::new(),
+                            version: String::new(),
+                            arch: String::new(),
+                            size: String::new(),
+                            location: String::new(),
+                            checksum: None,
+                        });
+                    }
+                    b"checksum256" => {
+                        in_checksum = true;
+                    }
+                    b"name" | b"version" | b"arch" | b"size" | b"location" => {
+                        current_field = Some(String::from_utf8_lossy(e.name().as_ref()).to_string());
+                    }
+                    _ => {}
+                },
+                Ok(Event::Text(e)) => {
+                    if let Some(package) = &mut current_package {
+                        if in_checksum {
+                            package.checksum = Some(VcsaChecksum {
+                                checksum_type: "sha256".to_string(),
+                                value: e.unescape()?.to_string(),
+                            });
+                        } else if let Some(field) = &current_field {
+                            let text = e.unescape()?.to_string();
+                            match field.as_str() {
+                                "name" => package.name = text,
+                                "version" => package.version = text,
+                                "arch" => package.arch = text,
+                                "size" => package.size = text,
+                                "location" => package.location = text,
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                Ok(Event::End(e)) => match e.name().as_ref() {
+                    b"package" => {
+                        if let Some(package) = current_package.take() {
+                            packages.push(package);
+                        }
+                    }
+                    b"checksum256" => {
+                        in_checksum = false;
+                    }
+                    _ => current_field = None,
+                },
+                Ok(Event::Eof) => break,
+                Err(e) => return Err(anyhow::anyhow!("Error parsing XML: {}", e)),
+                _ => {}
+            }
+        }
+
+        Ok(packages)
+    }
 }

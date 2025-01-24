@@ -121,10 +121,8 @@ struct SourceEntry {
     enabled: bool,
     status: String,
     r#type: String,
-    //vendor: String,
-    //#[serde(rename = "type")]
-    //source_type: String,
-    //description: String,
+    version: Option<String>,
+    files: Option<Vec<String>>,
 }
 
 impl Downloader {
@@ -277,22 +275,66 @@ impl Downloader {
     pub async fn process_sources(&self) -> Result<()> {
         let sources = self.read_sources_file().await?;
 
-        // Process all sources concurrently
         let mut tasks = Vec::new();
         for source in sources {
-            if source.enabled && source.r#type == "Host" {
-                let this = self.clone();
-                let url = source.url.clone();
-                tasks.push(tokio::spawn(async move {
-                    info!("Processing enabled source: {}", url);
-                    if let Err(e) = this.process_repository(&url).await {
-                        warn!("Error processing {}: {}", url, e);
-                    }
-                }));
+            if !source.enabled {
+                continue;
             }
+
+            let this = self.clone();
+            let url = source.url.clone();
+            
+            tasks.push(tokio::spawn(async move {
+                match source.r#type.as_str() {
+                    "Host" => {
+                        info!("Processing repository: {}", url);
+                        if let Err(e) = this.process_repository(&url).await {
+                            warn!("Error processing {}: {}", url, e);
+                        }
+                    }
+                    "File" => {
+                        info!("Downloading single file: {}", url);
+                        let filename = this.sanitize_filename(&url);
+                        let target_path = this.base_path.join(&filename);
+                        if let Err(e) = this.download_file(&url, &target_path).await {
+                            warn!("Error downloading {}: {}", url, e);
+                        }
+                    }
+                    "VCSA" => {
+                        if let (Some(version), Some(files)) = (source.version, source.files) {
+                            info!("Processing VCSA source: {}", url);
+                            for file in files {
+                                let full_url = this.process_vcsa_url(&url, &version, &file);
+                                info!("Downloading VCSA file: {}", full_url);
+                                
+                                let target_path = this.get_vcsa_file_path(&version, &file);
+                                if let Err(e) = this.download_file(&full_url, &target_path).await {
+                                    warn!("Error downloading {}: {}", full_url, e);
+                                }
+
+                                // If this is the manifest file, parse it and download additional files
+                                if file.ends_with("manifest-latest.xml") {
+                                    match tokio::fs::read_to_string(&target_path).await {
+                                        Ok(manifest_content) => {
+                                            if let Err(e) = this.process_vcsa_manifest(&manifest_content, &version).await {
+                                                warn!("Error processing manifest: {}", e);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!("Error reading manifest file: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            warn!("VCSA source missing version or files: {}", url);
+                        }
+                    }
+                    _ => warn!("Unsupported source type: {}", source.r#type),
+                }
+            }));
         }
 
-        // Wait for all tasks to complete
         join_all(tasks).await;
         Ok(())
     }
@@ -815,5 +857,69 @@ impl Downloader {
     pub async fn get_failed_downloads(&self) -> Vec<String> {
         let failed = self.failed.lock().await;
         failed.keys().cloned().collect()
+    }
+
+    fn sanitize_filename(&self, url: &str) -> String {
+        // Get the last part of the URL before query parameters
+        let base_name = url.split('?').next().unwrap_or(url)
+            .split('/').last().unwrap_or("downloaded_file");
+            
+        // Replace invalid characters with underscores
+        let invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
+        let mut filename = String::new();
+        for c in base_name.chars() {
+            if invalid_chars.contains(&c) {
+                filename.push('_');
+            } else {
+                filename.push(c);
+            }
+        }
+        
+        // Add .json extension if it's a JSON file and doesn't have an extension
+        if url.contains("type=vsan-updates-json") && !filename.ends_with(".json") {
+            filename.push_str(".json");
+        }
+        
+        filename
+    }
+
+    fn process_vcsa_url(&self, template_url: &str, version: &str, file: &str) -> String {
+        template_url
+            .replace("{version}", version)
+            .replace("{file}", file)
+    }
+
+    fn get_vcsa_file_path(&self, version: &str, file: &str) -> PathBuf {
+        // Extract filename from path (after last /)
+        let filename = file.split('/').last().unwrap_or(file);
+        
+        // Create path: base_path/valm/version/filename
+        self.base_path
+            .join("valm")
+            .join(version)
+            .join(filename)
+    }
+
+    async fn process_vcsa_manifest(&self, content: &str, version: &str) -> Result<()> {
+        let packages = self.xml_parser.parse_vcsa_packages(content)?;
+        info!("Found {} packages in VCSA manifest", packages.len());
+
+        for package in packages {
+            // Get full URL and target path
+            let url = format!(
+                "https://vapp-updates.vmware.com/vai-catalog/valm/vmw/8d167796-34d5-4899-be0a-6daade4005a3/{}.latest/{}",
+                version,
+                package.location
+            );
+            let target_path = self.get_vcsa_file_path(version, &package.location);
+
+            // Download with checksum verification
+            info!("Downloading VCSA package: {}", package.name);
+            if let Err(e) = self.download_file(&url, &target_path).await {
+                warn!("Error downloading package {}: {}", package.name, e);
+                continue;
+            }
+        }
+        Ok(())
     }
 }

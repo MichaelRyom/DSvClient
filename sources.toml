@@ -30,3 +30,39 @@ status = "Connected"
 vendor = "VMware"
 type = "Host"
 description = "VMware Async Releases for VM-tools on ESXi"
+
+[[sources]]
+url = "https://partnerweb.vmware.com/service/vsan/all.json"
+enabled = true
+status = "Connected"
+vendor = "VMware"
+type = "File"
+description = "vSAN HCL list"
+
+[[sources]]
+url = "https://vcsa.vmware.com/ph/api/v1/results?deploymentId=2d02e861-7e93-4954-9a73-b08692a330d1&collectorId=VsanCloudHealth.6_5&objectId=0c3e9009-ba5d-4e5f6-bae8-f25ec506d219&type=vsan-updates-json"
+enabled = true
+status = "Connected"
+vendor = "VMware"
+type = "File"
+description = "vSAN Release catalog"
+
+# Build info is available 
+# https://www.virten.net/vmware/vcenter-release-and-build-number-history/
+# https://knowledge.broadcom.com/external/article/326316/build-numbers-and-versions-of-vmware-vce.html
+[[sources]]
+url = "https://vapp-updates.vmware.com/vai-catalog/valm/vmw/8d167796-34d5-4899-be0a-6daade4005a3/{version}.latest/{file}"
+version = "7.0.3.02200"
+files = [
+    "manifest/manifest-latest.xml",
+    "manifest/manifest-latest.xml.sha256",
+    "manifest/manifest-latest.xml.sign",
+    "package-pool/rpm-manifest.json",
+    "package-pool/rpm-manifest.json.sha256",
+    "package-pool/rpm-manifest.json.sign"
+]
+enabled = true
+status = "Connected"
+vendor = "VMware"
+type = "VCSA"
+description = "vCenter upgrade patches"
