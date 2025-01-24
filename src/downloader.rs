@@ -287,47 +287,51 @@ impl Downloader {
             tasks.push(tokio::spawn(async move {
                 match source.r#type.as_str() {
                     "Host" => {
-                        info!("Processing repository: {}", url);
+                        info!("Processing Host repository: {}", url);
                         if let Err(e) = this.process_repository(&url).await {
-                            warn!("Error processing {}: {}", url, e);
+                            warn!("Error processing Host repository {}: {}", url, e);
                         }
                     }
                     "File" => {
-                        info!("Downloading single file: {}", url);
+                        info!("Processing File download: {}", url);
                         let filename = this.sanitize_filename(&url);
                         let target_path = this.base_path.join(&filename);
                         if let Err(e) = this.download_file(&url, &target_path).await {
-                            warn!("Error downloading {}: {}", url, e);
+                            warn!("Error downloading File {}: {}", url, e);
+                        } else {
+                            info!("Successfully downloaded File to: {}", target_path.display());
                         }
                     }
                     "VCSA" => {
                         if let (Some(version), Some(files)) = (source.version, source.files) {
-                            info!("Processing VCSA source: {}", url);
+                            info!("Processing VCSA source for version {}", version);
+                            info!("Base URL: {}", url);
+                            info!("Found {} files to process", files.len());
+                            
                             for file in files {
                                 let full_url = this.process_vcsa_url(&url, &version, &file);
-                                info!("Downloading VCSA file: {}", full_url);
+                                info!("Downloading VCSA file: {} -> {}", file, full_url);
                                 
                                 let target_path = this.get_vcsa_file_path(&version, &file);
-                                if let Err(e) = this.download_file(&full_url, &target_path).await {
-                                    warn!("Error downloading {}: {}", full_url, e);
+                                match this.download_file(&full_url, &target_path).await {
+                                    Ok(_) => info!("Successfully downloaded VCSA file to: {}", target_path.display()),
+                                    Err(e) => warn!("Error downloading VCSA file {}: {}", full_url, e),
                                 }
 
-                                // If this is the manifest file, parse it and download additional files
                                 if file.ends_with("manifest-latest.xml") {
+                                    info!("Processing VCSA manifest file for additional packages");
                                     match tokio::fs::read_to_string(&target_path).await {
                                         Ok(manifest_content) => {
                                             if let Err(e) = this.process_vcsa_manifest(&manifest_content, &version).await {
-                                                warn!("Error processing manifest: {}", e);
+                                                warn!("Error processing VCSA manifest: {}", e);
                                             }
                                         }
-                                        Err(e) => {
-                                            warn!("Error reading manifest file: {}", e);
-                                        }
+                                        Err(e) => warn!("Error reading VCSA manifest file: {}", e),
                                     }
                                 }
                             }
                         } else {
-                            warn!("VCSA source missing version or files: {}", url);
+                            warn!("Invalid VCSA source - missing version or files list: {}", url);
                         }
                     }
                     _ => warn!("Unsupported source type: {}", source.r#type),
@@ -447,7 +451,10 @@ impl Downloader {
 
             // Treat discovered files as VIB
             let mut report = self.download_report.lock().await;
-            report.total_vib_processed += 1;
+            report.downloaded_vibs.insert(target_path.clone());
+/*                     if !target_path.exists() {
+                        report.files_downloaded += 1;
+                    } */
             drop(report);
 
             match file.file_type {
@@ -904,22 +911,88 @@ impl Downloader {
         let packages = self.xml_parser.parse_vcsa_packages(content)?;
         info!("Found {} packages in VCSA manifest", packages.len());
 
+        let mut tasks = Vec::new();
+        let max_concurrent = self.verifier.config.verification.max_concurrent_files();
+        let file_semaphore = Arc::new(Semaphore::new(max_concurrent));
+
         for package in packages {
-            // Get full URL and target path
+            // Clone the values we need before the async move
+            let location = package.location.clone();
+            let pkg_info = location
+                .strip_prefix("package-pool/")
+                .and_then(|s| s.strip_suffix(".rpm"))
+                .unwrap_or(&location);
+                
             let url = format!(
                 "https://vapp-updates.vmware.com/vai-catalog/valm/vmw/8d167796-34d5-4899-be0a-6daade4005a3/{}.latest/{}",
                 version,
-                package.location
+                location
             );
-            let target_path = self.get_vcsa_file_path(version, &package.location);
+            let target_path = self.get_vcsa_file_path(version, &location);
+            let checksum = package.checksum.clone();
+            let checksum256 = package.checksum256.clone();
 
-            // Download with checksum verification
-            info!("Downloading VCSA package: {}", package.name);
-            if let Err(e) = self.download_file(&url, &target_path).await {
-                warn!("Error downloading package {}: {}", package.name, e);
+            // Skip if already processed and exists
+            if self.is_file_processed(&target_path.to_string_lossy()).await && target_path.exists() {
+                debug!("Skipping already processed VCSA package: {}", pkg_info);
                 continue;
             }
+
+            let this = self.clone();
+            let permit = file_semaphore.clone().acquire_owned().await?;
+            let target_path_clone = target_path.clone();
+            let pkg_info = pkg_info.to_string(); // Clone for the closure
+
+            tasks.push(tokio::spawn(async move {
+                let _permit = permit;
+                
+                let needs_download = if target_path_clone.exists() {
+                    // Prefer SHA256 if available, fall back to SHA1
+                    let (checksum, checksum_type) = if !checksum256.is_empty() {
+                        (checksum256.as_str(), "sha-256")
+                    } else {
+                        (checksum.as_str(), "sha-1")
+                    };
+
+                    match this.verifier.verify_checksum(&target_path_clone, checksum, checksum_type).await {
+                        Ok(true) => false,
+                        Ok(false) => {
+                            info!("Checksum mismatch for {}, will redownload", pkg_info);
+                            this.add_checksum_mismatch(&target_path_clone, checksum, "failed_verification").await;
+                            let _ = tokio::fs::remove_file(&target_path_clone).await;
+                            true
+                        }
+                        Err(e) => {
+                            warn!("Verification error for {}: {}", pkg_info, e);
+                            this.add_access_error(&target_path_clone, e.to_string()).await;
+                            true
+                        }
+                    }
+                } else {
+                    true
+                };
+
+                if needs_download {
+                    info!("Downloading VCSA package: {} -> {}", pkg_info, target_path_clone.display());
+                    if let Err(e) = this.download_file(&url, &target_path_clone).await {
+                        warn!("Error downloading package {} ({}): {}", pkg_info, url, e);
+                        this.add_failed_download(url, target_path_clone, None).await;
+                    }
+                } else {
+                    debug!("Skipping download of VCSA package (checksum valid): {}", pkg_info);
+                }
+
+                Ok::<(), anyhow::Error>(())
+            }));
         }
+
+        // Wait for all tasks to complete
+        for result in join_all(tasks).await {
+            if let Err(e) = result {
+                warn!("Task error: {}", e);
+            }
+        }
+
         Ok(())
     }
 }

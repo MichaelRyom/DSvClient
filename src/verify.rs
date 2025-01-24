@@ -236,7 +236,14 @@ impl VerificationManager {
         let cache = self.metadata_cache.lock().await;
         cache.get(path).cloned()
     }
+
+    // Add new helper method
+    fn is_vcsa_path(&self, path: &Path) -> bool {
+        path.to_string_lossy()
+            .contains("/valm/*/")
+    }
 }
+
 
 // Update function signature to accept Path
 pub async fn verify_directory(source: &Path) -> Result<VerificationReport> {
@@ -295,6 +302,27 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
                     }
 
                     if path.is_file() {
+                        // Add VCSA files to verification
+                        if verifier.is_vcsa_path(&path) {
+                            match fs::metadata(&path).await {
+                                Ok(_) => {
+                                    if path_str.ends_with(".xml") {
+                                        report.add_xml(path.clone()).await;
+                                    } else {
+                                        // Track non-XML VCSA files for verification
+                                        report.increment_checked().await;
+                                    }
+                                }
+                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                    report.add_missing(path.clone()).await;
+                                }
+                                Err(e) => {
+                                    report.add_error(path.clone(), format!("Access error: {}", e)).await;
+                                }
+                            }
+                            continue;
+                        }
+
                         match path.extension().and_then(|e| e.to_str()) {
                             Some("xml") | Some("zip") | Some("vib") => {
                                 match fs::metadata(&path).await {
