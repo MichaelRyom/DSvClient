@@ -116,8 +116,12 @@ impl AsyncReport {
 
     async fn add_missing(&self, path: PathBuf) {
         let mut report = self.inner.lock().await;
-        report.vib_files_missing.push(path.clone());
-        warn!("Missing VIB file: {}", path.display());
+        // Convert path to forward slashes for pattern matching
+        let path_str = path.to_string_lossy().replace('\\', "/");
+        if !report.vib_files_missing.contains(&path) {
+            report.vib_files_missing.push(path.clone());
+            warn!("Missing VIB file: {}", path.display());
+        }
     }
 
     async fn add_mismatch(&self, path: PathBuf, checksum: String) {
@@ -276,6 +280,15 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
             Ok(mut entries) => {
                 while let Some(entry) = entries.next_entry().await? {
                     let path = entry.path();
+                    // Convert path to forward slashes for pattern matching
+                    let path_str = path.to_string_lossy().replace('\\', "/");
+                    
+                    // Skip excluded files
+                    if verifier.config.exclude.should_exclude(&path_str) {
+                        debug!("Skipping excluded file: {}", path_str);
+                        continue;
+                    }
+
                     if path.is_file() {
                         match path.extension().and_then(|e| e.to_str()) {
                             Some("xml") => {

@@ -8,6 +8,7 @@ pub struct Config {
     pub download: DownloadConfig,
     pub general: GeneralConfig,
     pub logging: LoggingConfig,  // Add logging config
+    pub exclude: ExcludeConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -44,6 +45,12 @@ pub struct LoggingConfig {
     pub term_level: Option<String>,
     #[serde(default)]
     pub file_level: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ExcludeConfig {
+    #[serde(default)]
+    pub patterns: Option<Vec<String>>,
 }
 
 impl Config {
@@ -110,6 +117,11 @@ impl Config {
                 if let Some(file_level) = file_config.logging.file_level {
                     config.logging.file_level = Some(file_level);
                 }
+
+                // Merge exclude settings
+                if let Some(patterns) = file_config.exclude.patterns {
+                    config.exclude.patterns = Some(patterns);
+                }
             }
         } else {
             log::info!("No config.toml found, using default settings");
@@ -136,6 +148,7 @@ impl Default for Config {
             download: DownloadConfig::default(),
             general: GeneralConfig::default(),
             logging: LoggingConfig::default(),
+            exclude: ExcludeConfig::default(),
         }
     }
 }
@@ -174,6 +187,14 @@ impl Default for LoggingConfig {
             log_file: Some("download_errors.log".to_string()),
             term_level: Some("Info".to_string()),
             file_level: Some("Warn".to_string()),
+        }
+    }
+}
+
+impl Default for ExcludeConfig {
+    fn default() -> Self {
+        Self {
+            patterns: Some(Vec::new()),
         }
     }
 }
@@ -232,6 +253,20 @@ impl LoggingConfig {
             .as_deref()
             .and_then(|l| l.parse().ok())
             .unwrap_or(log::LevelFilter::Warn)
+    }
+}
+
+impl ExcludeConfig {
+    pub fn should_exclude(&self, url: &str) -> bool {
+        if let Some(patterns) = &self.patterns {
+            let normalized_url = url.replace('\\', "/");
+            patterns.iter().any(|pattern| {
+                let normalized_pattern = pattern.replace('\\', "/");
+                normalized_url.contains(&normalized_pattern)
+            })
+        } else {
+            false
+        }
     }
 }
 

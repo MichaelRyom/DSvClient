@@ -26,7 +26,61 @@ log_path = '''C:\temp\logs'''
 log_file = "download_errors.log"
 
 # Terminal log level: Error, Warn, Info, Debug, Trace (default: "Info")
-term_level = "Warn"
+term_level = "Info"
 
 # File log level: Error, Warn, Info, Debug, Trace (default: "Warn")
 file_level = "Debug"
+
+[exclude]
+# List of patterns to exclude from processing
+# Supports full URLs or partial matches
+# Always use forward slashes (/) in patterns, they will match both / and \ in paths
+# Examples
+# "vmw/vib20/tools-light",  # Example: exclude partial url
+# "https://hostupdate.vmware.com/software/VUM/PRODUCTION/vmtools-main/",  # Example: full URL
+# "VMware_locker*.vib",  # Example: exclude file pattern
+# ".vib",  # Example: exclude file extention
+
+patterns = [
+    "addon-main/addon/NEC/vib20/qedentv/QLC_bootbank_qedentv_3.40.9.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/NEC/vib20/qedf/QLC_bootbank_qedf_2.2.4.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/NEC/vib20/qedi/QLC_bootbank_qedi_2.19.5.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/NEC/vib20/qedrntv/QLC_bootbank_qedrntv_3.40.9.1-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/NEC/vib20/smx-provider/HPE_bootbank_smx-provider_700.03.16.00.12-14828939.vib",
+    "addon-main/addon/NEC/vib20/i40en/INT_bootbank_i40en_1.10.9.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/NEC/vib20/lpfc/EMU_bootbank_lpfc_12.6.228.4-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/NEC/vib20/qfle3f/QLC_bootbank_qfle3f_2.1.6.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/NEC/vib20/qcnic/QLC_bootbank_qcnic_2.0.0.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/NEC/vib20/qfle3/QLC_bootbank_qfle3_1.4.6.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/NEC/vib20/qfle3i/QLC_bootbank_qfle3i_2.1.2.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/NEC/vib20/amscli/HPE_bootbank_amscli_11.5.0.22-1OEM.700.0.0.15525992.vib",
+    "addon-main/addon/NEC/vib20/amsd/HPE_bootbank_amsd_700.11.5.0.28-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/NEC/vib20/ilo/HPE_bootbank_ilo_700.10.1.0.16-1OEM.700.0.0.14828939.vib",
+    "addon-main/addon/NEC/vib20/ixgben/INT_bootbank_ixgben_1.8.9.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/NEC/vib20/igbn/INT_bootbank_igbn_1.4.11.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/NEC/vib20/qlnativefc/Marvell_bootbank_qlnativefc_4.1.9.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/qedentv/QLC_bootbank_qedentv_3.40.9.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/qedi/QLC_bootbank_qedi_2.19.5.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/qedrntv/QLC_bootbank_qedrntv_3.40.9.1-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/qedf/QLC_bootbank_qedf_2.2.4.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/sut/HPE_bootbank_sut_700.2.5.5-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/smx-provider/HPE_bootbank_smx-provider_700.03.16.00.12-14828939.vib",
+    "addon-main/addon/HTI/vib20/hpessacli/HPE_bootbank_hpessacli_4.18.1.0-7.0.0.15525992.hpe.vib",
+    "addon-main/addon/HTI/vib20/lpfc/EMU_bootbank_lpfc_12.6.228.4-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/ilo/HPE_bootbank_ilo_700.10.1.0.16-1OEM.700.0.0.14828939.vib",
+    "addon-main/addon/HTI/vib20/amsd/HPE_bootbank_amsd_700.11.5.0.28-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/amscli/HPE_bootbank_amscli_11.5.0.22-1OEM.700.0.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/qfle3i/QLC_bootbank_qfle3i_2.1.2.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/qfle3f/QLC_bootbank_qfle3f_2.1.6.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/qcnic/QLC_bootbank_qcnic_2.0.0.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/qfle3/QLC_bootbank_qfle3_1.4.6.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/qlnativefc/Marvell_bootbank_qlnativefc_4.1.9.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/ixgben/INT_bootbank_ixgben_1.8.9.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/bootcfg/HPE_bootbank_bootcfg_700.10.5.0.23-7.0.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/hponcfg/HPE_bootbank_hponcfg_700.10.5.0.25-7.0.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/testevent/HPE_bootbank_testevent_700.10.5.0.24-7.0.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/conrep/HPE_bootbank_conrep_700.10.5.0.34-7.0.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/cru/HPE_bootbank_cru_700.10.16-1OEM.700.0.0.14828939.vib",
+    "addon-main/addon/HTI/vib20/igbn/INT_bootbank_igbn_1.4.11.0-1OEM.700.1.0.15525992.vib",
+    "addon-main/addon/HTI/vib20/fc-enablement/HPE_bootbank_fc-enablement_700.3.5.0.40-1OEM.700.0.0.15525992.vib",
+]

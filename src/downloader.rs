@@ -348,6 +348,11 @@ impl Downloader {
     }
 
     async fn process_metadata(&self, url: &str) -> Result<()> {
+        // Check exclude patterns first
+        if self.verifier.config.exclude.should_exclude(url) {
+            debug!("Skipping excluded URL: {}", url);
+            return Ok(());
+        }
         info!("Processing metadata from URL: {}", url);
         let relative_base = self.extract_relative_path(url);
 
@@ -619,6 +624,11 @@ impl Downloader {
     }
 
     async fn download_file(&self, url: &str, target_path: &Path) -> Result<()> {
+        // Check exclude patterns first
+        if self.verifier.config.exclude.should_exclude(url) {
+            debug!("Skipping excluded URL: {}", url);
+            return Ok(());
+        }
         // Skip if file exists and is tracked
         let relative_path = target_path.strip_prefix(&self.base_path).map_or_else(
             |_| target_path.to_string_lossy().to_string(),
@@ -799,4 +809,14 @@ impl Downloader {
             report.files_missing.push(path);
         }
     }
+
+    /*async fn verify_checksum(&self, path: &Path, expected: &str, checksum_type: &str) -> Result<bool> {
+        // Convert path to URL format for pattern matching
+        let path_str = path.to_string_lossy().replace('\\', "/");
+        if self.config.exclude.should_exclude(&path_str) {
+            debug!("Skipping checksum verification for excluded file: {}", path.display());
+            return Ok(true);
+        }
+        // ...existing code...
+    }*/
 }
