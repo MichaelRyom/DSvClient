@@ -7,6 +7,7 @@ pub struct Config {
     pub verification: VerificationConfig,
     pub download: DownloadConfig,
     pub general: GeneralConfig,
+    pub logging: LoggingConfig,  // Add logging config
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -31,6 +32,18 @@ pub struct DownloadConfig {
 pub struct GeneralConfig {
     #[serde(default)]
     pub thread_sleep_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct LoggingConfig {
+    #[serde(default)]
+    pub log_path: Option<String>,
+    #[serde(default)]
+    pub log_file: Option<String>,
+    #[serde(default)]
+    pub term_level: Option<String>,
+    #[serde(default)]
+    pub file_level: Option<String>,
 }
 
 impl Config {
@@ -83,6 +96,20 @@ impl Config {
                 if let Some(sleep_ms) = file_config.general.thread_sleep_ms {
                     config.general.thread_sleep_ms = Some(sleep_ms);
                 }
+
+                // Merge logging settings
+                if let Some(log_path) = file_config.logging.log_path {
+                    config.logging.log_path = Some(log_path);
+                }
+                if let Some(log_file) = file_config.logging.log_file {
+                    config.logging.log_file = Some(log_file);
+                }
+                if let Some(term_level) = file_config.logging.term_level {
+                    config.logging.term_level = Some(term_level);
+                }
+                if let Some(file_level) = file_config.logging.file_level {
+                    config.logging.file_level = Some(file_level);
+                }
             }
         } else {
             log::info!("No config.toml found, using default settings");
@@ -108,6 +135,7 @@ impl Default for Config {
             verification: VerificationConfig::default(),
             download: DownloadConfig::default(),
             general: GeneralConfig::default(),
+            logging: LoggingConfig::default(),
         }
     }
 }
@@ -139,6 +167,17 @@ impl Default for GeneralConfig {
     }
 }
 
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            log_path: Some("logs".to_string()),
+            log_file: Some("download_errors.log".to_string()),
+            term_level: Some("Info".to_string()),
+            file_level: Some("Warn".to_string()),
+        }
+    }
+}
+
 // Use the default values from the Default implementations
 impl VerificationConfig {
     pub fn chunk_size(&self) -> usize {
@@ -164,6 +203,35 @@ impl DownloadConfig {
 impl GeneralConfig {
     pub fn thread_sleep_ms(&self) -> u64 {
         self.thread_sleep_ms.unwrap_or_else(|| GeneralConfig::default().thread_sleep_ms.unwrap())
+    }
+}
+
+impl LoggingConfig {
+    pub fn log_path(&self) -> String {
+        let raw_path = self.log_path.clone()
+            .unwrap_or_else(|| LoggingConfig::default().log_path.unwrap());
+        
+        // Convert the raw path to a proper PathBuf and back to normalize separators
+        let path = std::path::PathBuf::from(raw_path);
+        path.to_string_lossy().to_string()
+    }
+
+    pub fn log_file(&self) -> String {
+        self.log_file.clone().unwrap_or_else(|| LoggingConfig::default().log_file.unwrap())
+    }
+
+    pub fn term_level(&self) -> log::LevelFilter {
+        self.term_level
+            .as_deref()
+            .and_then(|l| l.parse().ok())
+            .unwrap_or(log::LevelFilter::Info)
+    }
+
+    pub fn file_level(&self) -> log::LevelFilter {
+        self.file_level
+            .as_deref()
+            .and_then(|l| l.parse().ok())
+            .unwrap_or(log::LevelFilter::Warn)
     }
 }
 

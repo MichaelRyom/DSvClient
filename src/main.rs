@@ -38,20 +38,25 @@ async fn main() -> Result<()> {
             anyhow::anyhow!("No download path provided")
         })?;
 
-    // Set up logging first
-    let log_file = File::create(download_path.join("download_errors.log"))?;
+    // Load config before setting up logging
+    let config = AppConfig::load_or_default();
+
+    // Create log directory if it doesn't exist
+    let log_dir = PathBuf::from(&config.logging.log_path());
+    std::fs::create_dir_all(&log_dir)?;
+    
+    // Set up logging with config values
+    let log_file = File::create(log_dir.join(&config.logging.log_file()))?;
     CombinedLogger::init(vec![
         TermLogger::new(
-            LevelFilter::Debug, // Change to Debug level temporarily
+            config.logging.term_level(),
             Config::default(),
             TerminalMode::Mixed,
             ColorChoice::Auto,
         ),
-        WriteLogger::new(LevelFilter::Warn, Config::default(), log_file),
+        WriteLogger::new(config.logging.file_level(), Config::default(), log_file),
     ])?;
 
-    // Then load config
-    let config = AppConfig::load_or_default();
     debug!("Config loaded: {:?}", config);
 
     // Check for sources.toml instead of sources

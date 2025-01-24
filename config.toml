@@ -10,10 +10,22 @@ max_concurrent_verifications = 128
 
 [download]
 #Default max_concurrent_downloads = 10 
-max_concurrent_downloads = 10
+max_concurrent_downloads = 1
 #Default buffer_size 8388608 = 8MB
 buffer_size = 8388608
 
 [general]
 #Default thread_sleep_ms = 0
 #thread_sleep_ms = 0
+
+[logging]
+log_path = '''C:\temp\logs'''
+
+# Name of the log file (default: "download_errors.log")
+log_file = "download_errors.log"
+
+# Terminal log level: Error, Warn, Info, Debug, Trace (default: "Info")
+term_level = "Warn"
+
+# File log level: Error, Warn, Info, Debug, Trace (default: "Warn")
+file_level = "Debug"

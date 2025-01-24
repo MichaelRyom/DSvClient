@@ -573,7 +573,7 @@ impl Downloader {
         let relative_path = self.extract_relative_path(url);
         let target_path = self.base_path.join(&relative_path);
 
-        // Check if XML exists and try to read it first
+        /*// Check if XML exists and try to read it first
         if target_path.exists() {
             match tokio::fs::read_to_string(&target_path).await {
                 Ok(content) => {
@@ -582,7 +582,7 @@ impl Downloader {
                 }
                 Err(e) => warn!("Failed to read cached XML {}: {}", target_path.display(), e),
             }
-        }
+        }*/
 
         // Download if not cached or cache read failed
         info!("Downloading XML: {}", url);
