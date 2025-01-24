@@ -10,7 +10,7 @@ max_concurrent_verifications = 128
 
 [download]
 #Default max_concurrent_downloads = 10 
-max_concurrent_downloads = 1
+max_concurrent_downloads = 10
 #Default buffer_size 8388608 = 8MB
 buffer_size = 8388608
 
@@ -19,6 +19,7 @@ buffer_size = 8388608
 #thread_sleep_ms = 0
 
 [logging]
+#Default log_path = logs - This means it will save to a folder in the source execution file directory
 log_path = '''C:\temp\logs'''
 
 # Name of the log file (default: "download_errors.log")
