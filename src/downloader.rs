@@ -142,9 +142,9 @@ impl Downloader {
             downloaded: Arc::new(Mutex::new(HashSet::new())),
             failed: Arc::new(Mutex::new(HashMap::new())),
             processor: Arc::new(ProcessManager::new(client.clone(), base_path.clone())),
-            verifier: Arc::new(VerificationManager::new(config.clone())),
+            verifier: Arc::new(VerificationManager::new(config.clone())), // Pass config to VerificationManager
             xml_parser: Arc::new(XmlParser::new()),
-            download_semaphore: Arc::new(Semaphore::new(config.download.max_concurrent_downloads)),
+            download_semaphore: Arc::new(Semaphore::new(config.download.max_concurrent_downloads())),
             processed_files: Arc::new(Mutex::new(FileTracker::default())),
             //config: Arc::new(config),
             download_report: Arc::new(Mutex::new(DownloadReport::default())), // Initialize the field
@@ -371,6 +371,9 @@ impl Downloader {
         
         // Process files concurrently with timeouts
         let mut tasks = Vec::new();
+        let max_concurrent = self.verifier.config.verification.max_concurrent_files(); // Use verification config
+        let file_semaphore = Arc::new(Semaphore::new(max_concurrent));
+
         for file in files {
             let full_relative_path = if file.relative_path.starts_with("http") {
                 self.extract_relative_path(&file.relative_path)
@@ -411,7 +414,7 @@ impl Downloader {
                     drop(report);
 
                     let this = self.clone();
-                    let permit = self.download_semaphore.clone().acquire_owned().await?;
+                    let permit = file_semaphore.clone().acquire_owned().await?; // Use verification semaphore for VIB processing
                     let file_clone = file.clone();
                     let target_path_clone = target_path.clone();
 

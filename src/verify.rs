@@ -40,7 +40,7 @@ impl VerificationReport {
     pub fn print_summary(&self) {
         info!("\nVerification Summary:");
         
-        if !self.vib_files_missing.is_empty() {
+        if (!self.vib_files_missing.is_empty()) {
             warn!("\nMissing VIB Files ({}):", self.vib_files_missing.len());
             for path in &self.vib_files_missing {
                 warn!("  {}", path.display());
@@ -142,14 +142,14 @@ impl AsyncReport {
 pub struct VerificationManager {
     //thread_pool: Arc<rayon::ThreadPool>,
     semaphore: Arc<Semaphore>,
-    config: Arc<AppConfig>,  // Use AppConfig instead of Config
+    pub config: Arc<AppConfig>,  // Use AppConfig instead of Config
     verified_files: Arc<Mutex<HashSet<PathBuf>>>,
     metadata_cache: Arc<Mutex<HashMap<PathBuf, (String, String)>>>, // Cache for (checksum, checksum_type)
 }
 
 impl VerificationManager {
     pub fn new(config: AppConfig) -> Self {
-        Self::new_with_concurrency(config.verification.max_concurrent_verifications, config)
+        Self::new_with_concurrency(config.verification.max_concurrent_verifications(), config)
     }
 
     pub fn new_with_concurrency(concurrent_verifications: usize, config: AppConfig) -> Self {
@@ -197,7 +197,7 @@ impl VerificationManager {
         let _permit = self.semaphore.acquire().await?;
         let path_for_closure = path.to_path_buf();
         let expected = expected.to_string();
-        let chunk_size = self.config.verification.chunk_size;  // Use config
+        let chunk_size = self.config.verification.chunk_size();  // Use helper method
 
         let result = task::spawn_blocking(move || -> Result<bool> {
             use std::fs::File;
@@ -266,7 +266,7 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
     let processor = ProcessManager::new(client, path.to_path_buf());
     
     // Load max concurrent files from config
-    let max_concurrent_files = verifier.config.verification.max_concurrent_files;
+    let max_concurrent_files = verifier.config.verification.max_concurrent_files();  // Use helper method
     let semaphore = Arc::new(Semaphore::new(max_concurrent_files));
 
     // First scan and count all files by type

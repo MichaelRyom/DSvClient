@@ -16,4 +16,4 @@ buffer_size = 8388608
 
 [general]
 #Default thread_sleep_ms = 0
-thread_sleep_ms = 0
+#thread_sleep_ms = 0

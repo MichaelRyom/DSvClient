@@ -11,53 +11,84 @@ pub struct Config {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct VerificationConfig {
-    pub chunk_size: usize,
-    pub max_concurrent_files: usize,
-    pub max_concurrent_verifications: usize,
+    #[serde(default)]
+    pub chunk_size: Option<usize>,
+    #[serde(default)]
+    pub max_concurrent_files: Option<usize>,
+    #[serde(default)]
+    pub max_concurrent_verifications: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct DownloadConfig {
-    pub max_concurrent_downloads: usize,
-    pub buffer_size: usize,
+    #[serde(default)]
+    pub max_concurrent_downloads: Option<usize>,
+    #[serde(default)]
+    pub buffer_size: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct GeneralConfig {
-    pub thread_sleep_ms: u64,
+    #[serde(default)]
+    pub thread_sleep_ms: Option<u64>,
 }
 
 impl Config {
     pub fn load() -> Result<Self> {
-        // Add debug logging for config file loading
         log::debug!("Attempting to load config file...");
         
-        // Try executable directory first
-        if let Ok(mut exe_path) = std::env::current_exe() {
-            exe_path.pop(); // Remove executable name
+        // Start with default configuration
+        let mut config = Config::default();
+        
+        // Try to load and merge config file
+        let config_content = if let Ok(mut exe_path) = std::env::current_exe() {
+            exe_path.pop();
             exe_path.push("config.toml");
             log::debug!("Checking exe path: {}", exe_path.display());
             
-            if let Ok(content) = fs::read_to_string(&exe_path) {
-                log::info!("Loaded config from executable path: {}", exe_path.display());
-                return Ok(toml::from_str(&content)?);
+            fs::read_to_string(&exe_path).or_else(|_| {
+                let cwd_path = std::env::current_dir()?.join("config.toml");
+                log::debug!("Checking current directory: {}", cwd_path.display());
+                fs::read_to_string(&cwd_path)
+            })
+        } else {
+            let cwd_path = std::env::current_dir()?.join("config.toml");
+            fs::read_to_string(&cwd_path)
+        };
+
+        // Merge configuration if file exists
+        if let Ok(content) = config_content {
+            log::info!("Found config.toml, merging with defaults");
+            if let Ok(file_config) = toml::from_str::<Config>(&content) {
+                // Merge verification settings
+                if let Some(chunk_size) = file_config.verification.chunk_size {
+                    config.verification.chunk_size = Some(chunk_size);
+                }
+                if let Some(max_files) = file_config.verification.max_concurrent_files {
+                    config.verification.max_concurrent_files = Some(max_files);
+                }
+                if let Some(max_verifications) = file_config.verification.max_concurrent_verifications {
+                    config.verification.max_concurrent_verifications = Some(max_verifications);
+                }
+
+                // Merge download settings
+                if let Some(max_downloads) = file_config.download.max_concurrent_downloads {
+                    config.download.max_concurrent_downloads = Some(max_downloads);
+                }
+                if let Some(buffer_size) = file_config.download.buffer_size {
+                    config.download.buffer_size = Some(buffer_size);
+                }
+
+                // Merge general settings
+                if let Some(sleep_ms) = file_config.general.thread_sleep_ms {
+                    config.general.thread_sleep_ms = Some(sleep_ms);
+                }
             }
+        } else {
+            log::info!("No config.toml found, using default settings");
         }
-        
-        // Try current working directory
-        let cwd_path = std::env::current_dir()?.join("config.toml");
-        log::debug!("Checking current directory: {}", cwd_path.display());
-        
-        match fs::read_to_string(&cwd_path) {
-            Ok(content) => {
-                log::info!("Loaded config from current directory: {}", cwd_path.display());
-                Ok(toml::from_str(&content)?)
-            }
-            Err(e) => {
-                log::warn!("Failed to load config.toml: {}", e);
-                Err(anyhow::anyhow!("Failed to load config: {}", e))
-            }
-        }
+
+        Ok(config)
     }
 
     pub fn load_or_default() -> Self {
@@ -74,19 +105,65 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            verification: VerificationConfig {
-                chunk_size: 256 * 1024, //262144 = 256KB
-                max_concurrent_files: 10,
-                max_concurrent_verifications: num_cpus::get() * 4,
-            },
-            download: DownloadConfig {
-                max_concurrent_downloads: 10,
-                buffer_size: 8 * 1024 * 1024, //8388608 = 8MB
-            },
-            general: GeneralConfig {
-                thread_sleep_ms: 0, // No sleep by default
-            },
+            verification: VerificationConfig::default(),
+            download: DownloadConfig::default(),
+            general: GeneralConfig::default(),
         }
+    }
+}
+
+impl Default for VerificationConfig {
+    fn default() -> Self {
+        Self {
+            chunk_size: Some(256 * 1024), // 256KB
+            max_concurrent_files: Some(10),
+            max_concurrent_verifications: Some(num_cpus::get() * 4),
+        }
+    }
+}
+
+impl Default for DownloadConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent_downloads: Some(10),
+            buffer_size: Some(8 * 1024 * 1024), // 8MB
+        }
+    }
+}
+
+impl Default for GeneralConfig {
+    fn default() -> Self {
+        Self {
+            thread_sleep_ms: Some(0),
+        }
+    }
+}
+
+// Use the default values from the Default implementations
+impl VerificationConfig {
+    pub fn chunk_size(&self) -> usize {
+        self.chunk_size.unwrap_or_else(|| VerificationConfig::default().chunk_size.unwrap())
+    }
+    pub fn max_concurrent_files(&self) -> usize {
+        self.max_concurrent_files.unwrap_or_else(|| VerificationConfig::default().max_concurrent_files.unwrap())
+    }
+    pub fn max_concurrent_verifications(&self) -> usize {
+        self.max_concurrent_verifications.unwrap_or_else(|| VerificationConfig::default().max_concurrent_verifications.unwrap())
+    }
+}
+
+impl DownloadConfig {
+    pub fn max_concurrent_downloads(&self) -> usize {
+        self.max_concurrent_downloads.unwrap_or_else(|| DownloadConfig::default().max_concurrent_downloads.unwrap())
+    }
+    pub fn buffer_size(&self) -> usize {
+        self.buffer_size.unwrap_or_else(|| DownloadConfig::default().buffer_size.unwrap())
+    }
+}
+
+impl GeneralConfig {
+    pub fn thread_sleep_ms(&self) -> u64 {
+        self.thread_sleep_ms.unwrap_or_else(|| GeneralConfig::default().thread_sleep_ms.unwrap())
     }
 }
 

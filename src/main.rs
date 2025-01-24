@@ -135,14 +135,14 @@ async fn main() -> Result<()> {
     // Output config settings
     info!("\nConfig settings used:");
     info!("  Verification:");
-    info!("    Chunk size: {} bytes", config.verification.chunk_size);
-    info!("    Max concurrent files: {}", config.verification.max_concurrent_files);
-    info!("    Max concurrent verifications: {}", config.verification.max_concurrent_verifications);
+    info!("    Chunk size: {} bytes", config.verification.chunk_size());
+    info!("    Max concurrent files: {}", config.verification.max_concurrent_files());
+    info!("    Max concurrent verifications: {}", config.verification.max_concurrent_verifications());
     info!("  Download:");
-    info!("    Max concurrent downloads: {}", config.download.max_concurrent_downloads);
-    info!("    Buffer size: {} bytes", config.download.buffer_size);
+    info!("    Max concurrent downloads: {}", config.download.max_concurrent_downloads());
+    info!("    Buffer size: {} bytes", config.download.buffer_size());
     info!("  General:");
-    info!("    Thread sleep: {} ms", config.general.thread_sleep_ms);
+    info!("    Thread sleep: {} ms", config.general.thread_sleep_ms());
 
     Ok(())
 }
