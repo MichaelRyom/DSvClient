@@ -693,8 +693,16 @@ impl Downloader {
         path: PathBuf,
         checksum: Option<(String, String)>,
     ) {
-        let mut failed: tokio::sync::MutexGuard<'_, HashMap<String, (PathBuf, Option<(String, String)>)>> = self.failed.lock().await;
-        failed.insert(url, (path, checksum));
+        let mut failed = self.failed.lock().await;
+        // Only add to failed downloads if it's not already there
+        if !failed.contains_key(&url) {
+            failed.insert(url, (path.clone(), checksum));
+            // Update the report when adding a new failed download
+            let mut report = self.download_report.lock().await;
+            if !report.files_missing.contains(&path) {
+                report.files_missing.push(path);
+            }
+        }
     }
 
     pub async fn retry_failed_downloads(&self) -> Result<()> {
@@ -705,62 +713,46 @@ impl Downloader {
 
         for (url, (path, _checksum)) in failed_downloads {
             info!("Retrying download: {}", url);
-            if let Err(e) = self.download_file(&url, &path).await {
-                warn!("Retry failed for {}: {}", url, e);
-            } else {
-                let mut failed = self.failed.lock().await;
-                failed.remove(&url);
+            match self.download_file(&url, &path).await {
+                Ok(_) => {
+                    let mut failed = self.failed.lock().await;
+                    failed.remove(&url);
+                    
+                    // Remove from missing files if download succeeded
+                    let mut report = self.download_report.lock().await;
+                    if let Some(pos) = report.files_missing.iter().position(|x| x == &path) {
+                        report.files_missing.remove(pos);
+                        report.files_downloaded += 1;
+                    }
+                }
+                Err(e) => {
+                    warn!("Retry failed for {}: {}", url, e);
+                }
             }
         }
 
         Ok(())
     }
 
-/*     pub async fn get_file_type_stats(&self) -> HashMap<String, usize> {
-        let mut stats = HashMap::new();
-        let downloaded = self.downloaded.lock().await;
-
-        for path in downloaded.iter() {
-            if let Some(ext) = path.extension() {
-                if let Some(ext_str) = ext.to_str() {
-                    *stats.entry(ext_str.to_string()).or_insert(0) += 1;
-                }
-            }
-        }
-
-        stats
-    }
- */
-    pub async fn get_failed_downloads(&self) -> Vec<String> {
-        let failed = self.failed.lock().await;
-        failed.keys().cloned().collect()
-    }
-
     pub async fn get_download_report(&self) -> DownloadReport {
         let mut report = self.download_report.lock().await.clone();
-        let tracker = self.processed_files.lock().await;
         
-        // Check for missing files across all tracked files
-        for path in tracker.xml_files.iter()
-            .chain(tracker.zip_files.iter())
-            .chain(tracker.vib_files.iter())
-            .chain(report.processed_xmls.iter())
-            .chain(report.processed_zips.iter())
-            .chain(report.downloaded_vibs.iter())
-        {
-            if !path.exists() && !report.files_missing.contains(path) {
-                report.files_missing.push(path.clone());
-                debug!("Adding missing file during report generation: {}", path.display());
-            }
-        }
+        // Get current failed downloads
+        let failed = self.failed.lock().await;
+        
+        // Update missing files count to match failed downloads
+        report.files_missing = failed.values()
+            .map(|(path, _)| path.clone())
+            .collect();
 
-        report.processed_files = tracker.processed_paths.len();
+        // Update other stats
+        report.processed_files = self.processed_files.lock().await.processed_paths.len();
         
-        // Calculate skipped files by subtracting all non-skipped files
-        let non_skipped = report.files_downloaded // Successfully downloaded
-            + report.files_missing.len()          // Failed to download
-            + report.access_errors.len()          // Access errors
-            + report.checksum_mismatches.len();   // Checksum mismatches
+        // Calculate skipped files correctly
+        let non_skipped = report.files_downloaded           // Successfully downloaded
+            + report.files_missing.len()                    // Failed downloads
+            + report.access_errors.len()                    // Access errors
+            + report.checksum_mismatches.len();            // Checksum mismatches
 
         report.files_skipped = report.processed_files.saturating_sub(non_skipped);
         
@@ -819,4 +811,9 @@ impl Downloader {
         }
         // ...existing code...
     }*/
+
+    pub async fn get_failed_downloads(&self) -> Vec<String> {
+        let failed = self.failed.lock().await;
+        failed.keys().cloned().collect()
+    }
 }

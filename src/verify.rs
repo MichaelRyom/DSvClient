@@ -86,15 +86,17 @@ impl VerificationReport {
     }
 }
 
-#[derive(Clone)]  // Add Clone derive
+#[derive(Clone)]
 pub struct AsyncReport {
-    inner: Arc<TokioMutex<VerificationReport>>,  // Change to Arc
+    inner: Arc<TokioMutex<VerificationReport>>,
+    verifier: Arc<VerificationManager>,
 }
 
 impl AsyncReport {
-    pub fn new() -> Self {
+    pub fn new(verifier: Arc<VerificationManager>) -> Self {
         Self {
             inner: Arc::new(TokioMutex::new(VerificationReport::default())),
+            verifier,
         }
     }
 
@@ -116,9 +118,11 @@ impl AsyncReport {
 
     async fn add_missing(&self, path: PathBuf) {
         let mut report = self.inner.lock().await;
-        // Convert path to forward slashes for pattern matching
+        // Convert path to URL-style for pattern matching
         let path_str = path.to_string_lossy().replace('\\', "/");
-        if !report.vib_files_missing.contains(&path) {
+        
+        // Skip excluded files
+        if !report.vib_files_missing.contains(&path) && !self.verifier.config.exclude.should_exclude(&path_str) {
             report.vib_files_missing.push(path.clone());
             warn!("Missing VIB file: {}", path.display());
         }
@@ -237,8 +241,8 @@ impl VerificationManager {
 // Update function signature to accept Path
 pub async fn verify_directory(source: &Path) -> Result<VerificationReport> {
     let config = AppConfig::load_or_default();
-    let report = Arc::new(AsyncReport::new());  // Wrap in Arc
-    let verifier = VerificationManager::new(config);
+    let verifier = Arc::new(VerificationManager::new(config));
+    let report = Arc::new(AsyncReport::new(verifier.clone()));  // Pass verifier to AsyncReport
 
     // Check if source is a path or URL
     if let Some(s) = source.to_str() {
@@ -280,10 +284,11 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
             Ok(mut entries) => {
                 while let Some(entry) = entries.next_entry().await? {
                     let path = entry.path();
-                    // Convert path to forward slashes for pattern matching
+                    
+                    // Convert to URL-style path for pattern matching
                     let path_str = path.to_string_lossy().replace('\\', "/");
                     
-                    // Skip excluded files
+                    // Skip excluded files completely
                     if verifier.config.exclude.should_exclude(&path_str) {
                         debug!("Skipping excluded file: {}", path_str);
                         continue;
@@ -291,33 +296,23 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
 
                     if path.is_file() {
                         match path.extension().and_then(|e| e.to_str()) {
-                            Some("xml") => {
+                            Some("xml") | Some("zip") | Some("vib") => {
                                 match fs::metadata(&path).await {
-                                    Ok(_) => report.add_xml(path.clone()).await,
+                                    Ok(_) => {
+                                        match path.extension().and_then(|e| e.to_str()) {
+                                            Some("xml") => report.add_xml(path.clone()).await,
+                                            Some("zip") => report.add_zip(path.clone()).await,
+                                            _ => {}
+                                        }
+                                    }
                                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                                        report.add_missing(path.clone()).await;
-                                    }
-                                    Err(e) => {
-                                        report.add_error(path.clone(), format!("Access error: {}", e)).await;
-                                    }
-                                }
-                            }
-                            Some("zip") => {
-                                match fs::metadata(&path).await {
-                                    Ok(_) => report.add_zip(path.clone()).await,
-                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                                        report.add_missing(path.clone()).await;
-                                    }
-                                    Err(e) => {
-                                        report.add_error(path.clone(), format!("Access error: {}", e)).await;
-                                    }
-                                }
-                            }
-                            Some("vib") => {
-                                match fs::metadata(&path).await {
-                                    Ok(_) => (), // Will be processed later
-                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                                        report.add_missing(path.clone()).await;
+                                        // Only report missing if not excluded
+                                        let path_str = path.to_string_lossy().replace('\\', "/");
+                                        if !verifier.config.exclude.should_exclude(&path_str) {
+                                            report.add_missing(path.clone()).await;
+                                        } else {
+                                            debug!("Skipping excluded missing file: {}", path.display());
+                                        }
                                     }
                                     Err(e) => {
                                         report.add_error(path.clone(), format!("Access error: {}", e)).await;
@@ -401,7 +396,12 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
                     match fs::metadata(&path).await {
                         Ok(_) => vib_paths.push(path),
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                            report.add_missing(path).await;
+                            let path_str = path.to_string_lossy().replace('\\', "/");
+                            if !verifier.config.exclude.should_exclude(&path_str) {
+                                report.add_missing(path.clone()).await;
+                            } else {
+                                debug!("Skipping excluded missing file: {}", path.display());
+                            }
                         }
                         Err(e) => {
                             report.add_error(path.clone(), format!("Access error: {}", e)).await;
@@ -420,7 +420,12 @@ async fn verify_directory_internal(path: &Path, verifier: &VerificationManager, 
 
     for vib_path in vib_paths {
         if !vib_path.exists() {
-            report.add_missing(vib_path).await;
+            let path_str = vib_path.to_string_lossy().replace('\\', "/");
+            if !verifier.config.exclude.should_exclude(&path_str) {
+                report.add_missing(vib_path.clone()).await;
+            } else {
+                debug!("Skipping excluded missing file: {}", vib_path.display());
+            }
             continue; // Skip verification of missing files
         }
         let permit = semaphore.clone().acquire_owned().await?;
