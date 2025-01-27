@@ -304,34 +304,36 @@ impl Downloader {
                     }
                     "VCSA" => {
                         if let (Some(version), Some(files)) = (source.version, source.files) {
-                            info!("Processing VCSA source for version {}", version);
-                            info!("Base URL: {}", url);
-                            info!("Found {} files to process", files.len());
+                            info!("Processing VCSA source: {}", url);
                             
-                            for file in files {
+                            // Download all specified files first
+                            for file in files.clone() { // Clone to avoid borrowing issues
                                 let full_url = this.process_vcsa_url(&url, &version, &file);
-                                info!("Downloading VCSA file: {} -> {}", file, full_url);
+                                info!("Downloading VCSA file: {}", full_url);
                                 
                                 let target_path = this.get_vcsa_file_path(&version, &file);
-                                match this.download_file(&full_url, &target_path).await {
-                                    Ok(_) => info!("Successfully downloaded VCSA file to: {}", target_path.display()),
-                                    Err(e) => warn!("Error downloading VCSA file {}: {}", full_url, e),
+                                if let Err(e) = this.download_file(&full_url, &target_path).await {
+                                    warn!("Error downloading {}: {}", full_url, e);
+                                    continue;
                                 }
 
+                                // If this is the manifest, process it to get additional files
                                 if file.ends_with("manifest-latest.xml") {
-                                    info!("Processing VCSA manifest file for additional packages");
                                     match tokio::fs::read_to_string(&target_path).await {
                                         Ok(manifest_content) => {
-                                            if let Err(e) = this.process_vcsa_manifest(&manifest_content, &version).await {
-                                                warn!("Error processing VCSA manifest: {}", e);
+                                            // Process manifest to get package files
+                                            if let Err(e) = this.process_vcsa_manifest(&manifest_content, &version, &url).await {
+                                                warn!("Error processing manifest: {}", e);
+                                            } else {
+                                                info!("Successfully processed VCSA manifest");
                                             }
                                         }
-                                        Err(e) => warn!("Error reading VCSA manifest file: {}", e),
+                                        Err(e) => warn!("Error reading manifest file: {}", e),
                                     }
                                 }
                             }
                         } else {
-                            warn!("Invalid VCSA source - missing version or files list: {}", url);
+                            warn!("VCSA source missing version or files: {}", url);
                         }
                     }
                     _ => warn!("Unsupported source type: {}", source.r#type),
@@ -891,9 +893,7 @@ impl Downloader {
     }
 
     fn process_vcsa_url(&self, template_url: &str, version: &str, file: &str) -> String {
-        template_url
-            .replace("{version}", version)
-            .replace("{file}", file)
+        format!("{}/{}.latest/{}", template_url, version, file)
     }
 
     fn get_vcsa_file_path(&self, version: &str, file: &str) -> PathBuf {
@@ -907,7 +907,7 @@ impl Downloader {
             .join(filename)
     }
 
-    async fn process_vcsa_manifest(&self, content: &str, version: &str) -> Result<()> {
+    async fn process_vcsa_manifest(&self, content: &str, version: &str, base_url: &str) -> Result<()> {
         let packages = self.xml_parser.parse_vcsa_packages(content)?;
         info!("Found {} packages in VCSA manifest", packages.len());
 
@@ -916,7 +916,6 @@ impl Downloader {
         let file_semaphore = Arc::new(Semaphore::new(max_concurrent));
 
         for package in packages {
-            // Clone the values we need before the async move
             let location = package.location.clone();
             let pkg_info = location
                 .strip_prefix("package-pool/")
@@ -924,10 +923,25 @@ impl Downloader {
                 .unwrap_or(&location);
                 
             let url = format!(
-                "https://vapp-updates.vmware.com/vai-catalog/valm/vmw/8d167796-34d5-4899-be0a-6daade4005a3/{}.latest/{}",
+                "{}/{}.latest/{}",
+                base_url,
                 version,
                 location
             );
+
+            /*// Clone the values we need before the async move
+            let location = package.location.clone();
+            let pkg_info = location
+                .strip_prefix("package-pool/")
+                .and_then(|s| s.strip_suffix(".rpm"))
+                .unwrap_or(&location);
+                
+            let url = format!(
+                //https://vapp-updates.vmware.com/vai-catalog/valm/vmw/8d167796-34d5-4899-be0a-6daade4005a3/{version}.latest/{file}
+                "https://vapp-updates.vmware.com/vai-catalog/valm/vmw/8d167796-34d5-4899-be0a-6daade4005a3/{}.latest/{}",
+                version,
+                location
+            );*/
             let target_path = self.get_vcsa_file_path(version, &location);
             let checksum = package.checksum.clone();
             let checksum256 = package.checksum256.clone();

@@ -51,7 +51,7 @@ description = "vSAN Release catalog"
 # https://www.virten.net/vmware/vcenter-release-and-build-number-history/
 # https://knowledge.broadcom.com/external/article/326316/build-numbers-and-versions-of-vmware-vce.html
 [[sources]]
-url = "https://vapp-updates.vmware.com/vai-catalog/valm/vmw/8d167796-34d5-4899-be0a-6daade4005a3/{version}.latest/{file}"
+url = "https://vapp-updates.vmware.com/vai-catalog/valm/vmw/8d167796-34d5-4899-be0a-6daade4005a3"  # Base URL without version
 version = "7.0.3.02200"
 files = [
     "manifest/manifest-latest.xml",
