@@ -2,11 +2,11 @@
 #Default chunk_size = 262144 (256KB)
 chunk_size = 262144
 
-#Default max_concurrent_files = 10 (Use 1000 for high performance)
-max_concurrent_files = 10
+#Default max_concurrent_files = 10 (Use a number equal or higher than max_concurrent_verifications for high performance CPU utilization/ to bring down time used verifing files hashes)
+max_concurrent_files = 1000
 
 #Default max_concurrent_verifications = num_cpus * 4
-#max_concurrent_verifications = 128
+max_concurrent_verifications = 128
 
 [download]
 #Default max_concurrent_downloads = 10 
