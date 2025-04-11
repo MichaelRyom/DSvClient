@@ -1,18 +1,18 @@
 [verification]
 #Default chunk_size = 262144 (256KB)
-chunk_size = 262144
+#chunk_size = 262144
 
-#Default max_concurrent_files = 10 (Use 1000 for high performance)
-max_concurrent_files = 10
+#Default max_concurrent_files = 10 (Use a number equal or higher than max_concurrent_verifications for high performance CPU utilization/ to bring down time used verifing files hashes)
+#max_concurrent_files = 1000
 
 #Default max_concurrent_verifications = num_cpus * 4
 #max_concurrent_verifications = 128
 
 [download]
 #Default max_concurrent_downloads = 10 
-max_concurrent_downloads = 10
+#max_concurrent_downloads = 10
 #Default buffer_size 8388608 = 8MB
-buffer_size = 8388608
+#buffer_size = 8388608
 
 [general]
 #Default thread_sleep_ms = 0
@@ -20,16 +20,16 @@ buffer_size = 8388608
 
 [logging]
 #Default log_path = logs - This means it will save to a folder in the source execution file directory
-log_path = '''C:\temp\logs'''
+#log_path = '''C:\temp\logs'''
 
 # Name of the log file (default: "download_errors.log")
-log_file = "download_errors.log"
+log_file = "DSvClient.log"
 
 # Terminal log level: Error, Warn, Info, Debug, Trace (default: "Info")
-term_level = "Info"
+#term_level = "Info"
 
 # File log level: Error, Warn, Info, Debug, Trace (default: "Warn")
-file_level = "Debug"
+#file_level = "Debug"
 
 [exclude]
 # List of patterns to exclude from processing
