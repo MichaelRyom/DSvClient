@@ -200,16 +200,16 @@ jobs:
           cargo build --release --target x86_64-pc-windows-msvc --verbose
 
           Write-Host "`nSearching for binary..."
-          Get-ChildItem -Path "." -Recurse -Filter "vmware-downloader*" | ForEach-Object {
+          Get-ChildItem -Path "." -Recurse -Filter "DSvClient*" | ForEach-Object {
               Write-Host "Found: $($_.FullName)"
           }
 
           # Look in both possible locations
           $possiblePaths = @(
-              "target/x86_64-pc-windows-msvc/release/vmware-downloader.exe",
-              "./target/x86_64-pc-windows-msvc/release/vmware-downloader.exe",
-              "target/release/vmware-downloader.exe",
-              "./target/release/vmware-downloader.exe"
+              "target/x86_64-pc-windows-msvc/release/DSvClient.exe",
+              "./target/x86_64-pc-windows-msvc/release/DSvClient.exe",
+              "target/release/DSvClient.exe",
+              "./target/release/DSvClient.exe"
           )
 
           $binPath = $null
@@ -224,7 +224,7 @@ jobs:
               Write-Host "`nBinary found at: $binPath"
               Get-Item $binPath | Select-Object FullName, Length, LastWriteTime
               # Ensure binary is in the expected location
-              $targetPath = "target/x86_64-pc-windows-msvc/release/vmware-downloader.exe"
+              $targetPath = "target/x86_64-pc-windows-msvc/release/DSvClient.exe"
               if ($binPath -ne $targetPath) {
                   New-Item -Path (Split-Path $targetPath) -ItemType Directory -Force
                   Copy-Item $binPath $targetPath -Force
@@ -242,8 +242,8 @@ jobs:
         shell: pwsh
         run: |
           $paths = @(
-            "target/x86_64-pc-windows-msvc/release/vmware-downloader.exe",
-            "target/release/vmware-downloader.exe"
+            "target/x86_64-pc-windows-msvc/release/DSvClient.exe",
+            "target/release/DSvClient.exe"
           )
           foreach ($path in $paths) {
             if (Test-Path $path) {
@@ -251,12 +251,20 @@ jobs:
               Get-Item $path | Select-Object FullName, Length, LastWriteTime
             }
           }
+          
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: DSvClient-windows
+          path: target/x86_64-pc-windows-msvc/release/DSvClient.exe
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Publish Release
         #if: steps.cache-release.outputs.cache-hit != 'true'
         uses: houseabsolute/actions-rust-release@v0
         with:
-          executable-name: vmware-downloader
+          executable-name: DSvClient
           target: x86_64-pc-windows-msvc
           changes-file: Changes.md
 
@@ -329,11 +337,19 @@ jobs:
           target: x86_64-unknown-linux-gnu
           args: "--locked --release"
           strip: true
+          
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: DSvClient-linux
+          path: target/x86_64-unknown-linux-gnu/release/DSvClient
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Publish Release
         uses: houseabsolute/actions-rust-release@v0
         with:
-          executable-name: vmware-downloader
+          executable-name: DSvClient
           target: x86_64-unknown-linux-gnu
           changes-file: Changes.md
 
@@ -389,11 +405,19 @@ jobs:
           target: x86_64-apple-darwin
           args: "--locked --release"
           strip: true
+          
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: DSvClient-macos
+          path: target/x86_64-apple-darwin/release/DSvClient
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Publish Release
         uses: houseabsolute/actions-rust-release@v0
         with:
-          executable-name: vmware-downloader
+          executable-name: DSvClient
           target: x86_64-apple-darwin
           changes-file: Changes.md
 
@@ -581,6 +605,14 @@ jobs:
           ls -la target/x86_64-unknown-freebsd/release/ || true
           ls -la target/release/ || true
         shell: bash
+        
+      - name: Upload FreeBSD Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: DSvClient-freebsd
+          path: target/x86_64-unknown-freebsd/release/DSvClient
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Create Changes.md
         if: steps.cache-build.outputs.cache-hit != 'true'
@@ -614,6 +646,6 @@ jobs:
         #if: steps.cache-build.outputs.cache-hit != 'true'
         uses: houseabsolute/actions-rust-release@v0
         with:
-          executable-name: vmware-downloader
+          executable-name: DSvClient
           target: x86_64-unknown-freebsd
           changes-file: Changes.md
