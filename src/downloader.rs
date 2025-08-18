@@ -1,6 +1,6 @@
 use crate::config::AppConfig;
 use crate::parser::{Vendor, XmlParser};
-use crate::process::{FileInfo, FileType, ProcessManager, Source};
+use crate::process::{FileType, ProcessManager, Source};
 use crate::verify::VerificationManager;
 use anyhow::Result;
 use bytes::Bytes;
@@ -52,7 +52,7 @@ impl DownloadReport {
     pub fn print_summary(&self) {
         info!("\nDownload Summary:");
 
-        if (!self.checksum_mismatches.is_empty()) {
+        if !self.checksum_mismatches.is_empty() {
             warn!(
                 "\nChecksum Mismatches ({}):",
                 self.checksum_mismatches.len()
@@ -67,14 +67,14 @@ impl DownloadReport {
             }
         }
 
-        if (!self.access_errors.is_empty()) {
+        if !self.access_errors.is_empty() {
             warn!("\nAccess Errors ({}):", self.access_errors.len());
             for (path, error) in &self.access_errors {
                 warn!("  {}: {}", path.display(), error);
             }
         }
 
-        if (!self.files_missing.is_empty()) {
+        if !self.files_missing.is_empty() {
             warn!("\nMissing Files ({}):", self.files_missing.len());
             for path in &self.files_missing {
                 warn!("  {}", path.display());
@@ -347,7 +347,7 @@ impl Downloader {
 
     async fn read_sources_file(&self) -> Result<Vec<SourceEntry>> {
         let sources_file = PathBuf::from("sources.toml");
-        if (!sources_file.exists()) {
+        if !sources_file.exists() {
             return Err(anyhow::anyhow!("sources.toml file not found"));
         }
 
@@ -388,11 +388,99 @@ impl Downloader {
             .find("VUM/PRODUCTION/")
             .map(|i| i + "VUM/PRODUCTION/".len())
         {
-            url[relative_idx..].to_string()
+            self.sanitize_path(&url[relative_idx..])
         } else {
-            // Fallback: use the last part of the URL
-            url.rsplit('/').next().unwrap_or(url).to_string()
+            // For non-VUM URLs (like Broadcom), extract meaningful path components
+            if let Ok(parsed_url) = url::Url::parse(url) {
+                let path = parsed_url.path().trim_start_matches('/');
+                
+                // Extract meaningful parts from the path
+                let meaningful_path = self.extract_meaningful_path(path);
+                self.sanitize_path(&meaningful_path)
+            } else {
+                // Fallback: sanitize the entire URL as a path
+                self.sanitize_path(url)
+            }
         }
+    }
+    
+    fn extract_meaningful_path(&self, path: &str) -> String {
+        let path_segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        
+        // Look for common meaningful segments and extract from there
+        for (i, segment) in path_segments.iter().enumerate() {
+            // Look for VMware/ESX related segments
+            if segment.contains("vmtools") || segment.contains("ESX_HOST") || segment.contains("vib") {
+                // Start from this segment or a few segments before if they seem meaningful
+                let start_idx = if i > 0 && path_segments[i-1].len() > 3 && !path_segments[i-1].chars().all(|c| c.is_uppercase() || c.is_numeric()) {
+                    i - 1
+                } else {
+                    i
+                };
+                return path_segments[start_idx..].join("/");
+            }
+            
+            // Look for addon patterns
+            if *segment == "addon" || *segment == "main" || *segment == "iovp" {
+                return path_segments[i..].join("/");
+            }
+            
+            // Look for common VMware patterns
+            if segment.ends_with("-main") || segment.contains("driver") || segment.contains("patch") {
+                return path_segments[i..].join("/");
+            }
+        }
+        
+        // If no meaningful segment found, look for the last few segments that seem relevant
+        if path_segments.len() > 3 {
+            // Skip generic segments like PROD, COMP, and take meaningful ones
+            let filtered: Vec<&str> = path_segments.iter()
+                .filter(|s| !matches!(s.to_uppercase().as_str(), "PROD" | "COMP" | "SOFTWARE" | "VUM" | "PRODUCTION"))
+                .filter(|s| s.len() > 2) // Skip very short segments
+                .cloned()
+                .collect();
+                
+            if filtered.len() >= 2 {
+                return filtered.join("/");
+            }
+        }
+        
+        // Fallback: return the last 2-3 meaningful segments
+        let meaningful_count = std::cmp::min(3, path_segments.len());
+        let start_idx = path_segments.len().saturating_sub(meaningful_count);
+        path_segments[start_idx..].join("/")
+    }
+    
+    fn sanitize_path(&self, path: &str) -> String {
+        // Replace invalid path characters with underscores
+        let invalid_chars = ['<', '>', ':', '"', '|', '?', '*'];
+        let mut result = String::new();
+        
+        for c in path.chars() {
+            if invalid_chars.contains(&c) {
+                result.push('_');
+            } else if c == '\\' {
+                result.push('/'); // Normalize backslashes to forward slashes
+            } else {
+                result.push(c);
+            }
+        }
+        result
+    }
+    
+    fn sanitize_path_component(&self, component: &str) -> String {
+        // Sanitize a single path component (like hostname)
+        let invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
+        let mut result = String::new();
+        
+        for c in component.chars() {
+            if invalid_chars.contains(&c) {
+                result.push('_');
+            } else {
+                result.push(c);
+            }
+        }
+        result
     }
 
     async fn process_metadata(&self, url: &str) -> Result<()> {
@@ -414,7 +502,7 @@ impl Downloader {
             let meta_path = self.base_path.join(&relative_base);
             report.zip_processed.insert(url.to_string());  // Store URL instead of incrementing
             report.processed_zips.insert(meta_path);
-            for file in &files {
+            for _file in &files {
                 report.total_vib_processed += 1;
             }
         }
@@ -644,7 +732,7 @@ impl Downloader {
         info!("Downloading XML: {}", url);
         let response = self.client.get(url.parse()?).await?;
 
-        if (!response.status().is_success()) {
+        if !response.status().is_success() {
             return Err(anyhow::anyhow!("HTTP error {}: {}", response.status(), url));
         }
 
@@ -698,7 +786,7 @@ impl Downloader {
         let status = response.status();
 
         // Check status code before proceeding
-        if (!status.is_success()) {
+        if !status.is_success() {
             warn!("HTTP {} error for URL: {}", status, url);
             // Add to failed downloads without saving the file
             self.add_failed_download(url.to_string(), target_path.to_path_buf(), None)

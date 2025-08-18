@@ -139,6 +139,85 @@ impl ProcessManager {
             base_path,
         }
     }
+    
+    fn sanitize_path(&self, path: &str) -> String {
+        // Replace invalid path characters with underscores
+        let invalid_chars = ['<', '>', ':', '"', '|', '?', '*'];
+        let mut result = String::new();
+        
+        for c in path.chars() {
+            if invalid_chars.contains(&c) {
+                result.push('_');
+            } else if c == '\\' {
+                result.push('/'); // Normalize backslashes to forward slashes
+            } else {
+                result.push(c);
+            }
+        }
+        result
+    }
+    
+    fn sanitize_path_component(&self, component: &str) -> String {
+        // Sanitize a single path component (like hostname)
+        let invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
+        let mut result = String::new();
+        
+        for c in component.chars() {
+            if invalid_chars.contains(&c) {
+                result.push('_');
+            } else {
+                result.push(c);
+            }
+        }
+        result
+    }
+    
+    fn extract_meaningful_path(&self, path: &str) -> String {
+        let path_segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        
+        // Look for common meaningful segments and extract from there
+        for (i, segment) in path_segments.iter().enumerate() {
+            // Look for VMware/ESX related segments
+            if segment.contains("vmtools") || segment.contains("ESX_HOST") || segment.contains("vib") {
+                // Start from this segment or a few segments before if they seem meaningful
+                let start_idx = if i > 0 && path_segments[i-1].len() > 3 && !path_segments[i-1].chars().all(|c| c.is_uppercase() || c.is_numeric()) {
+                    i - 1
+                } else {
+                    i
+                };
+                return path_segments[start_idx..].join("/");
+            }
+            
+            // Look for addon patterns
+            if *segment == "addon" || *segment == "main" || *segment == "iovp" {
+                return path_segments[i..].join("/");
+            }
+            
+            // Look for common VMware patterns
+            if segment.ends_with("-main") || segment.contains("driver") || segment.contains("patch") {
+                return path_segments[i..].join("/");
+            }
+        }
+        
+        // If no meaningful segment found, look for the last few segments that seem relevant
+        if path_segments.len() > 3 {
+            // Skip generic segments like PROD, COMP, and take meaningful ones
+            let filtered: Vec<&str> = path_segments.iter()
+                .filter(|s| !matches!(s.to_uppercase().as_str(), "PROD" | "COMP" | "SOFTWARE" | "VUM" | "PRODUCTION"))
+                .filter(|s| s.len() > 2) // Skip very short segments
+                .cloned()
+                .collect();
+                
+            if filtered.len() >= 2 {
+                return filtered.join("/");
+            }
+        }
+        
+        // Fallback: return the last 2-3 meaningful segments
+        let meaningful_count = std::cmp::min(3, path_segments.len());
+        let start_idx = path_segments.len().saturating_sub(meaningful_count);
+        path_segments[start_idx..].join("/")
+    }
 
     pub async fn process_source(&self, source: Source) -> Result<Vec<FileInfo>> {
         debug!("Processing source: {:?}", source);
@@ -356,13 +435,24 @@ impl ProcessManager {
                 // Extract everything after VUM/PRODUCTION/ as the relative path
                 url.split("VUM/PRODUCTION/")
                    .nth(1)
+                   .map(|s| self.sanitize_path(s))
                    .unwrap_or_else(|| {
-                       // If VUM/PRODUCTION/ not found, try to get filename from URL
-                       url.rsplit('/')
-                          .next()
-                          .unwrap_or(url)
+                       // If VUM/PRODUCTION/ not found, extract meaningful path from URL
+                       if let Ok(parsed_url) = url::Url::parse(url) {
+                           let path = parsed_url.path().trim_start_matches('/');
+                           
+                           // Extract meaningful parts from the path
+                           let meaningful_path = self.extract_meaningful_path(path);
+                           self.sanitize_path(&meaningful_path)
+                       } else {
+                           // Fallback: sanitize the filename from URL
+                           self.sanitize_path(
+                               url.rsplit('/')
+                                  .next()
+                                  .unwrap_or(url)
+                           )
+                       }
                    })
-                   .to_string()
             }
             Source::Path(path) => {
                 path.strip_prefix(&self.base_path)

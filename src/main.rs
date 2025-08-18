@@ -3,7 +3,7 @@ use bytes::Bytes;
 use http_body_util::Empty;
 use hyper_tls::HttpsConnector;
 use hyper_util::client::legacy::Client;
-use log::{debug, error, info, warn, LevelFilter};
+use log::{debug, error, info, warn};
 use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode, WriteLogger};
 use std::fs::File;
 use std::path::PathBuf;

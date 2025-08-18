@@ -40,7 +40,7 @@ impl VerificationReport {
     pub fn print_summary(&self) {
         info!("\nVerification Summary:");
         
-        if (!self.vib_files_missing.is_empty()) {
+        if !self.vib_files_missing.is_empty() {
             warn!("\nMissing VIB Files ({}):", self.vib_files_missing.len());
             for path in &self.vib_files_missing {
                 warn!("  {}", path.display());
