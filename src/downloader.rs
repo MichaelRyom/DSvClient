@@ -981,7 +981,7 @@ impl Downloader {
     }
 
     fn process_vcsa_url(&self, template_url: &str, version: &str, file: &str) -> String {
-        format!("{}/{}.latest/{}", template_url, version, file)
+        format!("{}/{}/{}", template_url, version, file)
     }
 
     fn get_vcsa_file_path(&self, version: &str, file: &str) -> PathBuf {
@@ -1011,7 +1011,7 @@ impl Downloader {
                 .unwrap_or(&location);
                 
             let url = format!(
-                "{}/{}.latest/{}",
+                "{}/{}/{}",
                 base_url,
                 version,
                 location
