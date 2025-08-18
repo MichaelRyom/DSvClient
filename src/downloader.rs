@@ -112,6 +112,8 @@ pub struct Downloader {
 
 #[derive(Debug, Deserialize)]
 struct SourceConfig {
+    #[serde(rename = "downloadToken")]
+    global_download_token: Option<String>,
     sources: Vec<SourceEntry>,
 }
 
@@ -123,6 +125,8 @@ struct SourceEntry {
     r#type: String,
     version: Option<String>,
     files: Option<Vec<String>>,
+    #[serde(rename = "downloadToken")]
+    download_token: Option<String>,
 }
 
 impl Downloader {
@@ -273,7 +277,7 @@ impl Downloader {
     }
 
     pub async fn process_sources(&self) -> Result<()> {
-        let sources = self.read_sources_file().await?;
+        let (sources, global_token) = self.read_sources_file().await?;
 
         let mut tasks = Vec::new();
         for source in sources {
@@ -283,32 +287,40 @@ impl Downloader {
 
             let this = self.clone();
             let url = source.url.clone();
+            // Use local token if available, otherwise fall back to global token
+            let effective_token = source.download_token.clone().or_else(|| global_token.clone());
             
             tasks.push(tokio::spawn(async move {
                 match source.r#type.as_str() {
                     "Host" => {
-                        info!("Processing Host repository: {}", url);
-                        if let Err(e) = this.process_repository(&url).await {
-                            warn!("Error processing Host repository {}: {}", url, e);
+                        // Replace download token in URL if present
+                        let processed_url = this.replace_download_token(&url, effective_token.as_deref());
+                        info!("Processing Host repository: {}", processed_url);
+                        if let Err(e) = this.process_repository(&processed_url).await {
+                            warn!("Error processing Host repository {}: {}", processed_url, e);
                         }
                     }
                     "File" => {
-                        info!("Processing File download: {}", url);
-                        let filename = this.sanitize_filename(&url);
+                        // Replace download token in URL if present
+                        let processed_url = this.replace_download_token(&url, effective_token.as_deref());
+                        info!("Processing File download: {}", processed_url);
+                        let filename = this.sanitize_filename(&processed_url);
                         let target_path = this.base_path.join(&filename);
-                        if let Err(e) = this.download_file(&url, &target_path).await {
-                            warn!("Error downloading File {}: {}", url, e);
+                        if let Err(e) = this.download_file(&processed_url, &target_path).await {
+                            warn!("Error downloading File {}: {}", processed_url, e);
                         } else {
                             info!("Successfully downloaded File to: {}", target_path.display());
                         }
                     }
                     "VCSA" => {
                         if let (Some(version), Some(files)) = (source.version, source.files) {
-                            info!("Processing VCSA source: {}", url);
+                            // Replace download token in base URL if present
+                            let processed_base_url = this.replace_download_token(&url, effective_token.as_deref());
+                            info!("Processing VCSA source: {}", processed_base_url);
                             
                             // Download all specified files first
                             for file in files.clone() { // Clone to avoid borrowing issues
-                                let full_url = this.process_vcsa_url(&url, &version, &file);
+                                let full_url = this.process_vcsa_url(&processed_base_url, &version, &file);
                                 info!("Downloading VCSA file: {}", full_url);
                                 
                                 let target_path = this.get_vcsa_file_path(&version, &file);
@@ -322,7 +334,7 @@ impl Downloader {
                                     match tokio::fs::read_to_string(&target_path).await {
                                         Ok(manifest_content) => {
                                             // Process manifest to get package files
-                                            if let Err(e) = this.process_vcsa_manifest(&manifest_content, &version, &url).await {
+                                            if let Err(e) = this.process_vcsa_manifest(&manifest_content, &version, &processed_base_url).await {
                                                 warn!("Error processing manifest: {}", e);
                                             } else {
                                                 info!("Successfully processed VCSA manifest");
@@ -345,7 +357,7 @@ impl Downloader {
         Ok(())
     }
 
-    async fn read_sources_file(&self) -> Result<Vec<SourceEntry>> {
+    async fn read_sources_file(&self) -> Result<(Vec<SourceEntry>, Option<String>)> {
         let sources_file = PathBuf::from("sources.toml");
         if !sources_file.exists() {
             return Err(anyhow::anyhow!("sources.toml file not found"));
@@ -358,7 +370,7 @@ impl Downloader {
             warn!("No valid sources found in sources.toml");
         }
 
-        Ok(config.sources)
+        Ok((config.sources, config.global_download_token))
     }
 
 /*     pub async fn process_sources_file(&self) -> Result<()> {
@@ -407,10 +419,16 @@ impl Downloader {
     fn extract_meaningful_path(&self, path: &str) -> String {
         let path_segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         
-        // Look for common meaningful segments and extract from there
+        // Look for Broadcom-specific patterns first
         for (i, segment) in path_segments.iter().enumerate() {
+            // Look for Broadcom path structure: /PROD/COMP/ESX_HOST/ or /PROD/COMP/VCENTER/
+            if *segment == "ESX_HOST" || *segment == "VCENTER" {
+                // Start from ESX_HOST or VCENTER and include everything after
+                return path_segments[i..].join("/");
+            }
+            
             // Look for VMware/ESX related segments
-            if segment.contains("vmtools") || segment.contains("ESX_HOST") || segment.contains("vib") {
+            if segment.contains("vmtools") || segment.contains("vib") {
                 // Start from this segment or a few segments before if they seem meaningful
                 let start_idx = if i > 0 && path_segments[i-1].len() > 3 && !path_segments[i-1].chars().all(|c| c.is_uppercase() || c.is_numeric()) {
                     i - 1
@@ -420,28 +438,48 @@ impl Downloader {
                 return path_segments[start_idx..].join("/");
             }
             
-            // Look for addon patterns
-            if *segment == "addon" || *segment == "main" || *segment == "iovp" {
-                return path_segments[i..].join("/");
+            // Look for addon patterns (after ESX_HOST/VCENTER check)
+            if segment.ends_with("-main") || *segment == "addon" || *segment == "main" || *segment == "iovp" {
+                // For Broadcom URLs, we want to include the parent component (ESX_HOST/VCENTER)
+                let start_idx = if i > 0 && (path_segments[i-1] == "ESX_HOST" || path_segments[i-1] == "VCENTER") {
+                    i - 1
+                } else {
+                    i
+                };
+                return path_segments[start_idx..].join("/");
             }
             
             // Look for common VMware patterns
-            if segment.ends_with("-main") || segment.contains("driver") || segment.contains("patch") {
+            if segment.contains("driver") || segment.contains("patch") {
                 return path_segments[i..].join("/");
             }
         }
         
-        // If no meaningful segment found, look for the last few segments that seem relevant
+        // For Broadcom URLs, look for meaningful segments after filtering generic ones
         if path_segments.len() > 3 {
-            // Skip generic segments like PROD, COMP, and take meaningful ones
-            let filtered: Vec<&str> = path_segments.iter()
-                .filter(|s| !matches!(s.to_uppercase().as_str(), "PROD" | "COMP" | "SOFTWARE" | "VUM" | "PRODUCTION"))
-                .filter(|s| s.len() > 2) // Skip very short segments
-                .cloned()
-                .collect();
+            // Skip generic segments like PROD, COMP, domain names, tokens, and take meaningful ones
+            let mut meaningful_segments = Vec::new();
+            let mut found_meaningful = false;
+            
+            for segment in &path_segments {
+                let upper_segment = segment.to_uppercase();
                 
-            if filtered.len() >= 2 {
-                return filtered.join("/");
+                // Skip common generic segments
+                if matches!(upper_segment.as_str(), "PROD" | "COMP" | "SOFTWARE" | "VUM" | "PRODUCTION") 
+                    || segment.starts_with("dl.") 
+                    || segment.contains(".com") 
+                    || segment.len() > 20 // Likely a token
+                    || (segment.len() < 3 && !found_meaningful) // Skip short segments at the beginning
+                {
+                    continue;
+                }
+                
+                found_meaningful = true;
+                meaningful_segments.push(*segment);
+            }
+            
+            if !meaningful_segments.is_empty() {
+                return meaningful_segments.join("/");
             }
         }
         
@@ -978,6 +1016,18 @@ impl Downloader {
         }
         
         filename
+    }
+
+    fn replace_download_token(&self, url: &str, token: Option<&str>) -> String {
+        if let Some(token_value) = token {
+            if url.contains("<downloadToken>") {
+                debug!("Replacing <downloadToken> in URL with provided token");
+                return url.replace("<downloadToken>", token_value);
+            }
+        } else if url.contains("<downloadToken>") {
+            warn!("URL contains <downloadToken> placeholder but no token provided: {}", url);
+        }
+        url.to_string()
     }
 
     fn process_vcsa_url(&self, template_url: &str, version: &str, file: &str) -> String {

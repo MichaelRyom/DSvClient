@@ -1,33 +1,36 @@
-# VMware ESXi Update Sources
+# Global Broadcom download token (used for all sources unless overridden)
+downloadToken = "YOUR_BROADCOM_DOWNLOAD_TOKEN_HERE"
+
+# Broadcom ESXi Update Sources (uses global download token)
 [[sources]]
-url = "https://hostupdate.vmware.com/software/VUM/PRODUCTION/addon-main/vmw-depot-index.xml"
+url = "https://dl.broadcom.com/<downloadToken>/PROD/COMP/ESX_HOST/addon-main/vmw-depot-index.xml"
 enabled = true
 status = "Connected"
-vendor = "VMware"
+vendor = "Broadcom"
 type = "Host"
 description = "Partner provided Addons for ESXi"
 
 [[sources]]
-url = "https://hostupdate.vmware.com/software/VUM/PRODUCTION/main/vmw-depot-index.xml"
+url = "https://dl.broadcom.com/<downloadToken>/PROD/COMP/ESX_HOST/main/vmw-depot-index.xml"
 enabled = true
 status = "Connected"
-vendor = "VMware"
+vendor = "Broadcom"
 type = "Host"
 description = "Download vSphere ESXi and ESX patches"
 
 [[sources]]
-url = "https://hostupdate.vmware.com/software/VUM/PRODUCTION/iovp-main/vmw-depot-index.xml"
+url = "https://dl.broadcom.com/<downloadToken>/PROD/COMP/ESX_HOST/iovp-main/vmw-depot-index.xml"
 enabled = true
 status = "Connected"
-vendor = "VMware"
+vendor = "Broadcom"
 type = "Host"
 description = "VMware Certified Async Drivers for ESXi"
 
 [[sources]]
-url = "https://hostupdate.vmware.com/software/VUM/PRODUCTION/vmtools-main/vmw-depot-index.xml"
+url = "https://dl.broadcom.com/<downloadToken>/PROD/COMP/ESX_HOST/vmtools-main/vmw-depot-index.xml"
 enabled = true
 status = "Connected"
-vendor = "VMware"
+vendor = "Broadcom"
 type = "Host"
 description = "VMware Async Releases for VM-tools on ESXi"
 
@@ -51,7 +54,7 @@ description = "vSAN Release catalog"
 # https://www.virten.net/vmware/vcenter-release-and-build-number-history/
 # https://knowledge.broadcom.com/external/article/326316/build-numbers-and-versions-of-vmware-vce.html
 [[sources]]
-url = "https://vapp-updates.vmware.com/vai-catalog/valm/vmw/8d167796-34d5-4899-be0a-6daade4005a3"  # Base URL without version
+url = "https://dl.broadcom.com/<downloadToken>/PROD/COMP/VCENTER/vmw/8d167796-34d5-4899-be0a-6daade4005a3"  # Base URL without version
 version = "7.0.3.02200"
 files = [
     "manifest/manifest-latest.xml",
@@ -63,12 +66,12 @@ files = [
 ]
 enabled = true
 status = "Connected"
-vendor = "VMware"
+vendor = "Broadcom"
 type = "VCSA"
-description = "vCenter upgrade patches"
+description = "vCenter 7.x upgrade patches"
 
 [[sources]]
-url = "https://vapp-updates.vmware.com/vai-catalog/valm/vmw/8d167796-34d5-4899-be0a-6daade4005a3"  # Base URL without version
+url = "https://dl.broadcom.com/<downloadToken>/PROD/COMP/VCENTER/vmw/8d167796-34d5-4899-be0a-6daade4005a3"  # Base URL without version
 version = "8.0.3.00400"
 files = [
     "manifest/manifest-latest.xml",
@@ -80,6 +83,15 @@ files = [
 ]
 enabled = true
 status = "Connected"
-vendor = "VMware"
+vendor = "Broadcom"
 type = "VCSA"
-description = "vCenter upgrade patches"
+description = "vCenter 8.x upgrade patches"
+
+# Example of a source with its own download token (overrides global)
+# [[sources]]
+# url = "https://dl.broadcom.com/<downloadToken>/PROD/COMP/ESX_HOST/special/vmw-depot-index.xml"
+# downloadToken = "SPECIAL_TOKEN_FOR_THIS_SOURCE"
+# enabled = true
+# vendor = "Broadcom"
+# type = "Host"
+# description = "Special source with custom token"
