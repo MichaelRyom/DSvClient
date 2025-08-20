@@ -5,16 +5,22 @@ use crate::verify::VerificationManager;
 use anyhow::Result;
 use bytes::Bytes;
 use futures::future::join_all;
-use http_body_util::Empty;
+use http_body_util::{BodyExt, Empty};
 use hyper_tls::HttpsConnector;
 use hyper_util::client::legacy::Client;
 use log::{debug, info, warn};
 //use rayon::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore}; // Change to use tokio's Mutex // Use renamed import
+use hyper::body::Body;
+use std::time::{Duration, Instant};
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use bytes::BytesMut;
+use futures::{Stream, StreamExt};
 
 //const MAX_CONCURRENT_DOWNLOADS: usize = 100;
 
@@ -28,6 +34,64 @@ struct FileTracker {
     vib_files: HashSet<PathBuf>,
 }
 
+// Add timeout backoff tracking
+#[derive(Debug, Clone)]
+struct TimeoutTracker {
+    timeout_count: usize,
+    last_timeout: Option<std::time::Instant>,
+    current_timeout: std::time::Duration,
+    max_timeout: std::time::Duration,
+}
+
+impl Default for TimeoutTracker {
+    fn default() -> Self {
+        Self {
+            timeout_count: 0,
+            last_timeout: None,
+            current_timeout: std::time::Duration::from_secs(30), // Base timeout
+            max_timeout: std::time::Duration::from_secs(300),    // Max 5 minutes
+        }
+    }
+}
+
+impl TimeoutTracker {
+    fn record_timeout(&mut self) {
+        self.timeout_count += 1;
+        self.last_timeout = Some(std::time::Instant::now());
+        
+        // Exponential backoff: double the timeout up to max
+        self.current_timeout = std::cmp::min(
+            self.current_timeout * 2,
+            self.max_timeout
+        );
+        
+        warn!("Timeout #{}, increasing timeout to {:?}", self.timeout_count, self.current_timeout);
+    }
+    
+    fn should_reduce_timeout(&self) -> bool {
+        if let Some(last) = self.last_timeout {
+            // Reduce timeout if it's been 5 minutes since last timeout
+            last.elapsed() > std::time::Duration::from_secs(300)
+        } else {
+            false
+        }
+    }
+    
+    fn maybe_reduce_timeout(&mut self) {
+        if self.should_reduce_timeout() && self.current_timeout > std::time::Duration::from_secs(30) {
+            self.current_timeout = std::cmp::max(
+                self.current_timeout / 2,
+                std::time::Duration::from_secs(30)
+            );
+            info!("Reducing timeout to {:?} after period of stability", self.current_timeout);
+        }
+    }
+    
+    fn get_current_timeout(&self) -> std::time::Duration {
+        self.current_timeout
+    }
+}
+
 type ProcessedFiles = Arc<Mutex<FileTracker>>;
 
 #[derive(Debug, Default, Clone)]
@@ -39,13 +103,18 @@ pub struct DownloadReport {
     pub processed_zips: HashSet<PathBuf>,
     pub downloaded_vibs: HashSet<PathBuf>,
     pub checksum_mismatches: Vec<(PathBuf, String, String)>, // (path, expected, actual)
-    pub access_errors: Vec<(PathBuf, String)>, // Add new field for access errors
+    pub access_errors: Vec<(PathBuf, String)>, // General access errors (non-403/404)
+    pub not_entitled: Vec<(String, PathBuf, String)>, // 403 Forbidden errors (URL, path, error_message)
+    pub not_found: Vec<(String, PathBuf, String)>, // 404 Not Found errors (URL, path, error_message)
+    pub timeout_errors: Vec<(String, PathBuf)>, // Download timeouts (URL, path)
     pub files_missing: Vec<PathBuf>, // Add new field for missing files
     pub total_xml_processed: usize,  // Add counter for total XML files found - So compiling works for now, remove later
     pub xml_processed: HashSet<String>,  // Changed from usize to HashSet<String>
     pub total_zip_processed: usize,  // Add counter for total ZIP files found - So compiling works for now, remove later
     pub zip_processed: HashSet<String>,  // Changed from usize to HashSet<String>
     pub total_vib_processed: usize,  // Add counter for total VIB files found
+    pub retry_attempts: usize,
+    pub retry_successes: usize,
 }
 
 impl DownloadReport {
@@ -74,8 +143,29 @@ impl DownloadReport {
             }
         }
 
+        if !self.not_entitled.is_empty() {
+            warn!("\nNot Entitled - Access Denied ({}):", self.not_entitled.len());
+            for (url, path, error_msg) in &self.not_entitled {
+                warn!("  {} -> {} (Error: {})", url, path.display(), error_msg);
+            }
+        }
+
+        if !self.not_found.is_empty() {
+            warn!("\nNot Found - Files Not Available ({}):", self.not_found.len());
+            for (url, path, error_msg) in &self.not_found {
+                warn!("  {} -> {} (Error: {})", url, path.display(), error_msg);
+            }
+        }
+
+        if !self.timeout_errors.is_empty() {
+            warn!("\nTimeout Errors ({}):", self.timeout_errors.len());
+            for (url, path) in &self.timeout_errors {
+                warn!("  {} -> {}", url, path.display());
+            }
+        }
+
         if !self.files_missing.is_empty() {
-            warn!("\nMissing Files ({}):", self.files_missing.len());
+            warn!("\nMissing Files - General Download Failures ({}):", self.files_missing.len());
             for path in &self.files_missing {
                 warn!("  {}", path.display());
             }
@@ -87,10 +177,19 @@ impl DownloadReport {
         info!("Files checked: {}", self.processed_files);
         info!("Files skipped (no issues with): {}", self.files_skipped);
         info!("Files successfully downloaded: {}", self.files_downloaded);
+        
+        if self.retry_attempts > 0 {
+            info!("Retry statistics: {} attempts, {} successes ({:.1}% success rate)", 
+                self.retry_attempts, self.retry_successes, 
+                (self.retry_successes as f32 / self.retry_attempts as f32) * 100.0);
+        }
+        
         info!("Errors:");
         info!("  - Access errors: {}", self.access_errors.len());
-        //info!("  - Checksum mismatches: {}", self.checksum_mismatches.len()); // Does not make sense to count this
-        info!("  - Download failures: {}", self.files_missing.len());
+        info!("  - Not entitled (403 Forbidden): {}", self.not_entitled.len());
+        info!("  - Not found (404 Not Found): {}", self.not_found.len());
+        info!("  - Timeout errors: {}", self.timeout_errors.len());
+        info!("  - Other download failures: {}", self.files_missing.len());
     }
 }
 
@@ -106,6 +205,7 @@ pub struct Downloader {
     xml_parser: Arc<XmlParser>,
     download_semaphore: Arc<Semaphore>,
     processed_files: ProcessedFiles,
+    timeout_tracker: Arc<Mutex<TimeoutTracker>>, // Add timeout tracking
     //config: Arc<AppConfig>, // Use AppConfig instead of Config
     download_report: Arc<Mutex<DownloadReport>>, // Add this field
 }
@@ -148,6 +248,7 @@ impl Downloader {
             xml_parser: Arc::new(XmlParser::new()),
             download_semaphore: Arc::new(Semaphore::new(config.download.max_concurrent_downloads())),
             processed_files: Arc::new(Mutex::new(FileTracker::default())),
+            timeout_tracker: Arc::new(Mutex::new(TimeoutTracker::default())), // Initialize timeout tracker
             //config: Arc::new(config),
             download_report: Arc::new(Mutex::new(DownloadReport::default())), // Initialize the field
         }
@@ -255,8 +356,10 @@ impl Downloader {
                     for metadata in metadata_list {
                         let metadata_url = format!("{}/{}", base_url, metadata.url);
                         let this = self.clone();
-                        let _permit = self.download_semaphore.clone().acquire_owned().await?;
+                        let permit = self.download_semaphore.clone().acquire_owned().await?;
                         metadata_tasks.push(tokio::spawn(async move {
+                            // The permit is held for the duration of this task and released when dropped
+                            let _permit = permit;
                             if let Err(e) = this.process_metadata(&metadata_url).await {
                                 warn!("Error processing metadata {}: {}", metadata_url, e);
                             }
@@ -277,7 +380,9 @@ impl Downloader {
     }
 
     pub async fn process_sources(&self) -> Result<()> {
+        info!("Starting process_sources...");
         let (sources, global_token) = self.read_sources_file().await?;
+        info!("Found {} sources to process", sources.len());
 
         let mut tasks = Vec::new();
         for source in sources {
@@ -353,7 +458,22 @@ impl Downloader {
             }));
         }
 
-        join_all(tasks).await;
+        info!("Waiting for {} source processing tasks to complete...", tasks.len());
+        let results = join_all(tasks).await;
+        
+        let mut successful = 0;
+        let mut failed = 0;
+        for (i, result) in results.iter().enumerate() {
+            match result {
+                Ok(_) => successful += 1,
+                Err(e) => {
+                    failed += 1;
+                    warn!("Source task {} failed: {}", i, e);
+                }
+            }
+        }
+        
+        info!("Source processing completed: {} successful, {} failed", successful, failed);
         Ok(())
     }
 
@@ -422,8 +542,16 @@ impl Downloader {
         // Look for Broadcom-specific patterns first
         for (i, segment) in path_segments.iter().enumerate() {
             // Look for Broadcom path structure: /PROD/COMP/ESX_HOST/ or /PROD/COMP/VCENTER/
-            if *segment == "ESX_HOST" || *segment == "VCENTER" {
-                // Start from ESX_HOST or VCENTER and include everything after
+            if *segment == "ESX_HOST" {
+                // Skip ESX_HOST and start from the next segment
+                if i + 1 < path_segments.len() {
+                    return path_segments[(i + 1)..].join("/");
+                } else {
+                    // If ESX_HOST is the last segment, return empty or fallback
+                    return String::new();
+                }
+            } else if *segment == "VCENTER" {
+                // Start from VCENTER and include everything after (keep VCENTER in path)
                 return path_segments[i..].join("/");
             }
             
@@ -440,8 +568,12 @@ impl Downloader {
             
             // Look for addon patterns (after ESX_HOST/VCENTER check)
             if segment.ends_with("-main") || *segment == "addon" || *segment == "main" || *segment == "iovp" {
-                // For Broadcom URLs, we want to include the parent component (ESX_HOST/VCENTER)
-                let start_idx = if i > 0 && (path_segments[i-1] == "ESX_HOST" || path_segments[i-1] == "VCENTER") {
+                // For Broadcom URLs, check if the parent is ESX_HOST or VCENTER
+                let start_idx = if i > 0 && path_segments[i-1] == "ESX_HOST" {
+                    // Skip ESX_HOST, start from current segment
+                    i
+                } else if i > 0 && path_segments[i-1] == "VCENTER" {
+                    // Include VCENTER in the path
                     i - 1
                 } else {
                     i
@@ -460,17 +592,33 @@ impl Downloader {
             // Skip generic segments like PROD, COMP, domain names, tokens, and take meaningful ones
             let mut meaningful_segments = Vec::new();
             let mut found_meaningful = false;
+            let mut skip_next = false;
             
-            for segment in &path_segments {
+            for (_i, segment) in path_segments.iter().enumerate() {
+                if skip_next {
+                    skip_next = false;
+                    continue;
+                }
+                
                 let upper_segment = segment.to_uppercase();
                 
-                // Skip common generic segments
-                if matches!(upper_segment.as_str(), "PROD" | "COMP" | "SOFTWARE" | "VUM" | "PRODUCTION") 
+                // Skip common generic segments including ESX_HOST
+                if matches!(upper_segment.as_str(), "PROD" | "COMP" | "SOFTWARE" | "VUM" | "PRODUCTION" | "ESX_HOST") 
                     || segment.starts_with("dl.") 
                     || segment.contains(".com") 
                     || segment.len() > 20 // Likely a token
-                    || (segment.len() < 3 && !found_meaningful) // Skip short segments at the beginning
                 {
+                    continue;
+                }
+                
+                // Skip protocol scheme
+                if *segment == "https:" {
+                    skip_next = true; // Also skip the empty segment after ://
+                    continue;
+                }
+                
+                // Skip very short segments at the beginning unless we've found meaningful content
+                if segment.len() < 3 && !found_meaningful {
                     continue;
                 }
                 
@@ -554,6 +702,14 @@ impl Downloader {
         let file_semaphore = Arc::new(Semaphore::new(max_concurrent));
 
         for file in files {
+            // Check exclusion patterns first, before any processing
+            if let Source::Http(url) = &file.source {
+                if self.verifier.config.exclude.should_exclude(url) {
+                    debug!("Skipping excluded file: {}", url);
+                    continue;
+                }
+            }
+
             let full_relative_path = if file.relative_path.starts_with("http") {
                 self.extract_relative_path(&file.relative_path)
             } else {
@@ -725,14 +881,30 @@ impl Downloader {
             }
         }
 
-        // Wait for all tasks to complete
-        for result in join_all(tasks).await {
+        // Wait for all tasks to complete with progress reporting
+        let total_tasks = tasks.len();
+        info!("Waiting for {} file processing tasks to complete...", total_tasks);
+        
+        let results = join_all(tasks).await;
+        let mut completed = 0;
+        let mut errors = 0;
+        
+        for result in results {
             match result {
-                Ok(Ok(())) => (),
-                Ok(Err(e)) => warn!("Task error: {}", e),
-                Err(e) => warn!("Task join error: {}", e),
+                Ok(Ok(())) => completed += 1,
+                Ok(Err(e)) => {
+                    errors += 1;
+                    warn!("Task error: {}", e);
+                },
+                Err(e) => {
+                    errors += 1;
+                    warn!("Task join error: {}", e);
+                },
             }
         }
+        
+        info!("File processing completed: {}/{} successful, {} errors", 
+              completed, total_tasks, errors);
 
         Ok(())
     }
@@ -820,16 +992,75 @@ impl Downloader {
             return Ok(());
         }
 
-        let response = self.client.get(url.parse()?).await?;
+        let download_start = std::time::Instant::now();
+        
+        // Use shorter initial timeout for connection establishment
+        let connect_timeout = std::time::Duration::from_secs(30);
+        let response = match tokio::time::timeout(connect_timeout, self.client.get(url.parse()?)).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(e)) => {
+                warn!("HTTP request failed for {}: {}", url, e);
+                self.add_failed_download(url.to_string(), target_path.to_path_buf(), None).await;
+                return Err(e.into());
+            }
+            Err(_) => {
+                warn!("HTTP request timeout for URL: {} (timeout: {:?})", url, connect_timeout);
+                self.add_timeout_error(url.to_string(), target_path.to_path_buf()).await;
+                return Err(anyhow::anyhow!("HTTP request timeout for: {}", url));
+            }
+        };
+        
         let status = response.status();
 
-        // Check status code before proceeding
+        // Check status code before proceeding with specific handling for 403 and 404
         if !status.is_success() {
-            warn!("HTTP {} error for URL: {}", status, url);
-            // Add to failed downloads without saving the file
-            self.add_failed_download(url.to_string(), target_path.to_path_buf(), None)
-                .await;
-            return Err(anyhow::anyhow!("HTTP error {}: {}", status, url));
+            if status.as_u16() == 403 {
+                // Read the response body to get the actual error message
+                let error_body = match http_body_util::BodyExt::collect(response.into_body()).await {
+                    Ok(bytes) => {
+                        match String::from_utf8(bytes.to_bytes().to_vec()) {
+                            Ok(body_text) => {
+                                // Limit the error message to prevent extremely long messages
+                                if body_text.len() > 500 {
+                                    format!("{}...", &body_text[..500])
+                                } else {
+                                    body_text
+                                }
+                            }
+                            Err(_) => "Unable to read error message (non-UTF8 response)".to_string()
+                        }
+                    }
+                    Err(e) => format!("Unable to read error message: {}", e)
+                };
+                warn!("Access denied (403 Forbidden) for URL: {} - Error: {}", url, error_body);
+                self.add_not_entitled_error(url.to_string(), target_path.to_path_buf(), error_body).await;
+                return Err(anyhow::anyhow!("Access denied (403 Forbidden): {}", url));
+            } else if status.as_u16() == 404 {
+                // Read the response body to get the actual error message
+                let error_body = match http_body_util::BodyExt::collect(response.into_body()).await {
+                    Ok(bytes) => {
+                        match String::from_utf8(bytes.to_bytes().to_vec()) {
+                            Ok(body_text) => {
+                                // Limit the error message to prevent extremely long messages
+                                if body_text.len() > 500 {
+                                    format!("{}...", &body_text[..500])
+                                } else {
+                                    body_text
+                                }
+                            }
+                            Err(_) => "Unable to read error message (non-UTF8 response)".to_string()
+                        }
+                    }
+                    Err(e) => format!("Unable to read error message: {}", e)
+                };
+                warn!("File not found (404 Not Found) for URL: {} - Error: {}", url, error_body);
+                self.add_not_found_error(url.to_string(), target_path.to_path_buf(), error_body).await;
+                return Err(anyhow::anyhow!("File not found (404 Not Found): {}", url));
+            } else {
+                warn!("HTTP {} error for URL: {}", status, url);
+                self.add_failed_download(url.to_string(), target_path.to_path_buf(), None).await;
+                return Err(anyhow::anyhow!("HTTP error {}: {}", status, url));
+            }
         }
 
         // Create parent directories if they don't exist
@@ -837,28 +1068,36 @@ impl Downloader {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        let bytes = http_body_util::BodyExt::collect(response.into_body())
-            .await?
-            .to_bytes();
+        // Download body with data-based timeout (activity-based instead of fixed time)
+        let bytes = match self.download_with_data_timeout(response.into_body()).await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                if e.to_string().contains("timeout") {
+                    self.add_timeout_error(url.to_string(), target_path.to_path_buf()).await;
+                } else {
+                    self.add_failed_download(url.to_string(), target_path.to_path_buf(), None).await;
+                }
+                return Err(e);
+            }
+        };
 
         tokio::fs::write(target_path, bytes).await?;
 
+        let download_duration = download_start.elapsed();
+        
         if !target_path.exists() {
             let mut report = self.download_report.lock().await;
             report.files_missing.push(target_path.to_path_buf());
             debug!("Adding missing file during download: {}", target_path.display());
         }
 
-/*         // Only update downloaded count for new files
-        if !target_path.exists() {
-            let mut report = self.download_report.lock().await;
-            report.files_downloaded += 1;
-        } */
+        // Update timeout tracker with successful download
+        self.record_successful_download(url, download_duration).await;
 
         // Update download stats
         self.update_download_stats(target_path).await;
 
-        info!("Downloaded: {}", target_path.display());
+        info!("Downloaded: {} (took {:?})", target_path.display(), download_duration);
         self.mark_file_processed(relative_path).await;
 
         Ok(())
@@ -888,42 +1127,145 @@ impl Downloader {
             failed.clone()
         };
 
-        for (url, (path, _checksum)) in failed_downloads {
-            info!("Retrying download: {}", url);
-            match self.download_file(&url, &path).await {
-                Ok(_) => {
-                    let mut failed = self.failed.lock().await;
-                    failed.remove(&url);
-                    
-                    // Remove from missing files if download succeeded
-                    let mut report = self.download_report.lock().await;
-                    if let Some(pos) = report.files_missing.iter().position(|x| x == &path) {
-                        report.files_missing.remove(pos);
-                        report.files_downloaded += 1;
+        if failed_downloads.is_empty() {
+            info!("No failed downloads to retry");
+            return Ok(());
+        }
+
+        info!("Starting multi-threaded retry process for {} failed downloads...", failed_downloads.len());
+        
+        // First check which URLs we should skip (403 errors in not_entitled list)
+        let not_entitled_urls: HashSet<String> = {
+            let report = self.download_report.lock().await;
+            report.not_entitled.iter().map(|(url, _, _)| url.clone()).collect()
+        };
+        
+        let original_failed_count = failed_downloads.len();
+        
+        // Filter out URLs that should be skipped
+        let retry_candidates: Vec<(String, PathBuf)> = failed_downloads
+            .into_iter()
+            .filter_map(|(url, (path, _checksum))| {
+                if not_entitled_urls.contains(&url) {
+                    debug!("Skipping retry for not entitled URL: {}", url);
+                    None
+                } else {
+                    Some((url, path))
+                }
+            })
+            .collect();
+        
+        let retry_candidates_count = retry_candidates.len();
+        let skipped_count = original_failed_count - retry_candidates_count;
+        
+        if retry_candidates.is_empty() {
+            info!("No downloads to retry after filtering (all were 403 Forbidden)");
+            return Ok(());
+        }
+        
+        info!("Retrying {} downloads concurrently (skipping {} not entitled)...", 
+              retry_candidates_count, skipped_count);
+        
+        // Use a semaphore to control concurrency during retries
+        let retry_semaphore = Arc::new(Semaphore::new(self.verifier.config.download.max_concurrent_downloads()));
+        let mut retry_tasks = Vec::new();
+        
+        for (url, path) in retry_candidates {
+            let this = self.clone();
+            let permit = retry_semaphore.clone().acquire_owned().await?;
+            let url_clone = url.clone();
+            let path_clone = path.clone();
+            
+            retry_tasks.push(tokio::spawn(async move {
+                let _permit = permit; // Hold permit for duration of retry
+                
+                info!("Retrying download: {}", url_clone);
+                
+                // Update retry attempt counter
+                {
+                    let mut report = this.download_report.lock().await;
+                    report.retry_attempts += 1;
+                }
+                
+                match this.download_file(&url_clone, &path_clone).await {
+                    Ok(_) => {
+                        info!("Retry successful for: {}", url_clone);
+                        
+                        // Remove from failed downloads
+                        {
+                            let mut failed = this.failed.lock().await;
+                            failed.remove(&url_clone);
+                        }
+                        
+                        // Update stats
+                        {
+                            let mut report = this.download_report.lock().await;
+                            if let Some(pos) = report.files_missing.iter().position(|x| x == &path_clone) {
+                                report.files_missing.remove(pos);
+                                report.files_downloaded += 1;
+                                report.retry_successes += 1;
+                            }
+                        }
+                        
+                        Ok(())
+                    }
+                    Err(e) => {
+                        if e.to_string().contains("403 Forbidden") {
+                            debug!("Retry returned 403 for {}, marking as not entitled", url_clone);
+                            this.add_not_entitled_error(url_clone.clone(), path_clone, "Retry failed with 403 Forbidden".to_string()).await;
+                        } else {
+                            warn!("Retry failed for {}: {}", url_clone, e);
+                        }
+                        Err(e)
                     }
                 }
+            }));
+        }
+        
+        // Wait for all retry tasks to complete
+        let results = join_all(retry_tasks).await;
+        
+        let mut retry_successful = 0;
+        let mut retry_failed = 0;
+        
+        for result in results {
+            match result {
+                Ok(Ok(_)) => retry_successful += 1,
+                Ok(Err(_)) => retry_failed += 1,
                 Err(e) => {
-                    warn!("Retry failed for {}: {}", url, e);
+                    retry_failed += 1;
+                    warn!("Retry task join error: {}", e);
                 }
             }
         }
-
+        
+        info!("Multi-threaded retry process completed: {} successful, {} failed, {} skipped (not entitled)", 
+               retry_successful, retry_failed, skipped_count);
         Ok(())
     }
 
     pub async fn get_download_report(&self) -> DownloadReport {
-        let mut report = self.download_report.lock().await.clone();
+        // Collect data from each mutex separately to avoid holding multiple locks
+        let mut report = {
+            let report_guard = self.download_report.lock().await;
+            report_guard.clone()
+        };
         
-        // Get current failed downloads
-        let failed = self.failed.lock().await;
+        // Get current failed downloads (separate lock)
+        let failed_downloads: Vec<PathBuf> = {
+            let failed = self.failed.lock().await;
+            failed.values().map(|(path, _)| path.clone()).collect()
+        };
         
         // Update missing files count to match failed downloads
-        report.files_missing = failed.values()
-            .map(|(path, _)| path.clone())
-            .collect();
+        report.files_missing = failed_downloads;
 
-        // Update other stats
-        report.processed_files = self.processed_files.lock().await.processed_paths.len();
+        // Update other stats (separate lock)
+        let processed_count = {
+            let processed = self.processed_files.lock().await;
+            processed.processed_paths.len()
+        };
+        report.processed_files = processed_count;
         
         // Calculate skipped files correctly
         let non_skipped = report.files_downloaded           // Successfully downloaded
@@ -976,6 +1318,60 @@ impl Downloader {
         if !report.files_missing.contains(&path) {
             debug!("Adding missing file: {}", path.display());
             report.files_missing.push(path);
+        }
+    }
+
+    // Add helper method for tracking 403 not entitled errors
+    async fn add_not_entitled_error(&self, url: String, path: PathBuf, error_message: String) {
+        let mut report = self.download_report.lock().await;
+        report.not_entitled.push((url, path, error_message));
+    }
+
+    // Add helper method for tracking 404 not found errors
+    async fn add_not_found_error(&self, url: String, path: PathBuf, error_message: String) {
+        let mut report = self.download_report.lock().await;
+        report.not_found.push((url, path, error_message));
+    }
+
+    // Add helper method for tracking timeout errors
+    async fn add_timeout_error(&self, url: String, path: PathBuf) {
+        let mut report = self.download_report.lock().await;
+        report.timeout_errors.push((url, path));
+        
+        // Also update timeout tracker
+        let mut tracker = self.timeout_tracker.lock().await;
+        tracker.record_timeout();
+    }
+
+    // Calculate adaptive timeout based on file type and historical data
+    async fn calculate_adaptive_timeout(&self, url: &str) -> std::time::Duration {
+        let mut tracker = self.timeout_tracker.lock().await;
+        tracker.maybe_reduce_timeout();
+        
+        let base_timeout = tracker.get_current_timeout();
+        
+        // Increase timeout for large files based on URL patterns
+        if url.ends_with(".vib") || url.contains("vib20") {
+            // VIB files can be large (50-200MB), give them more time
+            base_timeout * 2
+        } else if url.ends_with(".zip") || url.contains("metadata") {
+            // Metadata ZIP files are usually smaller but still need reasonable time
+            std::cmp::max(base_timeout, std::time::Duration::from_secs(60))
+        } else if url.ends_with(".rpm") {
+            // RPM packages can be large
+            base_timeout * 2
+        } else {
+            // XML files and other small files
+            std::cmp::min(base_timeout, std::time::Duration::from_secs(60))
+        }
+    }
+
+    // Record successful download for timeout adaptation
+    async fn record_successful_download(&self, _url: &str, duration: std::time::Duration) {
+        // If download was very fast, we could consider reducing timeouts
+        if duration < std::time::Duration::from_secs(5) {
+            let mut tracker = self.timeout_tracker.lock().await;
+            tracker.maybe_reduce_timeout();
         }
     }
 
@@ -1046,8 +1442,9 @@ impl Downloader {
     }
 
     async fn process_vcsa_manifest(&self, content: &str, version: &str, base_url: &str) -> Result<()> {
+        let start_time = std::time::Instant::now();
         let packages = self.xml_parser.parse_vcsa_packages(content)?;
-        info!("Found {} packages in VCSA manifest", packages.len());
+        info!("Found {} packages in VCSA manifest for version {}", packages.len(), version);
 
         let mut tasks = Vec::new();
         let max_concurrent = self.verifier.config.verification.max_concurrent_files();
@@ -1138,13 +1535,233 @@ impl Downloader {
             }));
         }
 
-        // Wait for all tasks to complete
-        for result in join_all(tasks).await {
-            if let Err(e) = result {
-                warn!("Task error: {}", e);
+        // Wait for all tasks to complete with progress tracking
+        let total_tasks = tasks.len();
+        info!("Processing {} VCSA packages concurrently (max_concurrent: {})...", total_tasks, max_concurrent);
+        
+        let results = join_all(tasks).await;
+        let mut completed = 0;
+        let mut errors = 0;
+        
+        for result in results {
+            match result {
+                Ok(Ok(())) => completed += 1,
+                Ok(Err(e)) => {
+                    errors += 1;
+                    warn!("VCSA package task error: {}", e);
+                },
+                Err(e) => {
+                    errors += 1;
+                    warn!("VCSA package task join error: {}", e);
+                }
+            }
+        }
+        
+        let duration = start_time.elapsed();
+        info!("VCSA manifest processing completed in {:?}: {}/{} packages successful, {} errors", 
+              duration, completed, total_tasks, errors);
+
+        Ok(())
+    }
+
+    // Data-based timeout function that monitors data reception instead of fixed time
+    async fn download_with_data_timeout<B>(&self, body: B) -> Result<Bytes>
+    where
+        B: Body + Send + 'static + std::marker::Unpin,
+        B::Data: Send + AsRef<[u8]>,
+        B::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let mut body_stream = BodyExt::into_data_stream(body);
+        let mut buffer = BytesMut::new();
+        let mut last_data_time = Instant::now();
+        let data_timeout = Duration::from_secs(30); // 30 seconds without data reception
+        let max_total_time = Duration::from_secs(600); // 10 minutes total maximum
+        let start_time = Instant::now();
+
+        loop {
+            match tokio::time::timeout(Duration::from_millis(100), body_stream.next()).await {
+                Ok(Some(Ok(chunk))) => {
+                    // Received data, reset timeout
+                    last_data_time = Instant::now();
+                    buffer.extend_from_slice(chunk.as_ref());
+                }
+                Ok(Some(Err(e))) => {
+                    return Err(anyhow::anyhow!("Body stream error: {}", e));
+                }
+                Ok(None) => {
+                    // Stream ended successfully
+                    break;
+                }
+                Err(_) => {
+                    // Timeout on waiting for next chunk - check if we should abort
+                    let elapsed_since_data = last_data_time.elapsed();
+                    let total_elapsed = start_time.elapsed();
+                    
+                    if elapsed_since_data > data_timeout {
+                        return Err(anyhow::anyhow!(
+                            "Data timeout: no data received for {:?}", 
+                            elapsed_since_data
+                        ));
+                    }
+                    
+                    if total_elapsed > max_total_time {
+                        return Err(anyhow::anyhow!(
+                            "Total timeout: download took longer than {:?}", 
+                            max_total_time
+                        ));
+                    }
+                    
+                    // Continue waiting
+                    continue;
+                }
             }
         }
 
+        Ok(buffer.freeze())
+    }
+
+    // Output 403 and 404 errors to JSON file for use with exclusion patterns
+    pub async fn output_403_errors_to_json(&self, _base_path: &Path) -> Result<()> {
+        let report = self.download_report.lock().await;
+        
+        // Collect both 403 and 404 errors
+        if report.not_entitled.is_empty() && report.not_found.is_empty() {
+            info!("No 403 Forbidden or 404 Not Found errors to output");
+            return Ok(());
+        }
+        
+        // Create exclusion patterns from both 403 and 404 errors
+        let mut all_error_urls = Vec::new();
+        
+        // Collect 403 errors
+        for (url, _, _) in &report.not_entitled {
+            all_error_urls.push(url.clone());
+        }
+        
+        // Collect 404 errors  
+        for (url, _, _) in &report.not_found {
+            all_error_urls.push(url.clone());
+        }
+        
+        let exclusion_patterns: Vec<String> = all_error_urls
+            .iter()
+            .map(|url| {
+                // Extract meaningful patterns from URLs that can be used for exclusion
+                self.extract_exclusion_pattern(url)
+            })
+            .collect::<HashSet<_>>() // Remove duplicates
+            .into_iter()
+            .collect();
+        
+        // Combine detailed errors from both categories
+        let mut detailed_errors = Vec::new();
+        
+        // Add 403 errors
+        for (url, path, error_message) in &report.not_entitled {
+            detailed_errors.push(serde_json::json!({
+                "url": url,
+                "target_path": path.display().to_string(),
+                "error_type": "403 Forbidden - Not Entitled",
+                "error_message": error_message
+            }));
+        }
+        
+        // Add 404 errors
+        for (url, path, error_message) in &report.not_found {
+            detailed_errors.push(serde_json::json!({
+                "url": url,
+                "target_path": path.display().to_string(),
+                "error_type": "404 Not Found - File Does Not Exist",
+                "error_message": error_message
+            }));
+        }
+        
+        let json_data = serde_json::json!({
+            "description": "Auto-generated exclusion patterns from 403 Forbidden and 404 Not Found errors",
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "total_403_errors": report.not_entitled.len(),
+            "total_404_errors": report.not_found.len(),
+            "total_errors": report.not_entitled.len() + report.not_found.len(),
+            "unique_patterns": exclusion_patterns.len(),
+            "exclusion_patterns": exclusion_patterns,
+            "detailed_errors": detailed_errors
+        });
+        
+        let json_file_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join("exclusions.json");
+        
+        // Check if file already exists
+        if json_file_path.exists() {
+            warn!("Exclusions file already exists: {}. Cannot overwrite existing file.", json_file_path.display());
+            warn!("To update exclusions, please delete or rename the existing file and run again.");
+            return Ok(());
+        }
+        
+        let json_content = serde_json::to_string_pretty(&json_data)?;
+        tokio::fs::write(&json_file_path, json_content).await?;
+        
+        info!("Exported {} HTTP errors to: {} ({} 403 Forbidden, {} 404 Not Found)", 
+              report.not_entitled.len() + report.not_found.len(), 
+              json_file_path.display(),
+              report.not_entitled.len(),
+              report.not_found.len());
+        info!("Generated {} unique exclusion patterns", exclusion_patterns.len());
+        info!("To use these patterns, add 'exclude_file = {:?}' to your config.toml", 
+              json_file_path.display().to_string());
+        
         Ok(())
+    }
+    
+    // Extract meaningful exclusion patterns from URLs
+    fn extract_exclusion_pattern(&self, url: &str) -> String {
+        // Try to extract meaningful patterns that can be used for exclusion
+        if let Ok(parsed_url) = url::Url::parse(url) {
+            let path = parsed_url.path();
+            let path_segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+            
+            // For Broadcom URLs, we want to preserve meaningful path context
+            // Look for key path markers that indicate where meaningful paths start
+            let mut meaningful_start_idx = 0;
+            
+            for (i, segment) in path_segments.iter().enumerate() {
+                // Skip generic segments at the beginning
+                if matches!(segment.to_uppercase().as_str(), "PROD" | "COMP" | "SOFTWARE" | "VUM" | "PRODUCTION") 
+                    || segment.starts_with("dl.") 
+                    || segment.contains(".com") 
+                    || segment.len() > 20 // Likely a token
+                {
+                    meaningful_start_idx = i + 1;
+                    continue;
+                }
+                
+                // Found a meaningful segment, break and use this as start
+                if segment.len() > 2 && !segment.chars().all(|c| c.is_numeric()) {
+                    meaningful_start_idx = i;
+                    break;
+                }
+            }
+            
+            // If we found meaningful segments, use them
+            if meaningful_start_idx < path_segments.len() {
+                let meaningful_path = path_segments[meaningful_start_idx..].join("/");
+                
+                // Don't make it too broad - if it's just a filename, add some parent context
+                if meaningful_path.contains('/') {
+                    return meaningful_path;
+                } else {
+                    // Single segment (likely just filename), try to include parent context
+                    let context_start = if meaningful_start_idx > 0 { meaningful_start_idx - 1 } else { meaningful_start_idx };
+                    return path_segments[context_start..].join("/");
+                }
+            }
+            
+            // Fallback: use the path without protocol/domain, but keep significant structure
+            let clean_path = path.trim_start_matches('/');
+            if !clean_path.is_empty() {
+                return clean_path.to_string();
+            }
+        }
+        
+        // Final fallback: use the URL as-is
+        url.to_string()
     }
 }

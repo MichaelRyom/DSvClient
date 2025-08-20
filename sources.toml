@@ -1,5 +1,5 @@
 # Global Broadcom download token (used for all sources unless overridden)
-downloadToken = "YOUR_BROADCOM_DOWNLOAD_TOKEN_HERE"
+downloadToken = ""
 
 # Broadcom ESXi Update Sources (uses global download token)
 [[sources]]

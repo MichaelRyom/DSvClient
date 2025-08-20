@@ -99,39 +99,72 @@ async fn main() -> Result<()> {
             }
         }
     } else {
-        // Process all sources
-        if let Err(e) = service.process_sources().await {
-            warn!("Errors occurred during initial processing: {}", e);
-        }
-
-        // Retry failed downloads
-        if let Err(e) = service.retry_failed_downloads().await {
-            warn!("Errors occurred during retry attempts: {}", e);
-        }
-
-        // Get and display file type statistics
-        /*let stats = service.get_file_type_stats().await; // Add .await
-        info!("\nFile format summary:");
-        for (ext, count) in stats.into_iter() {
-            // Use into_iter() on the HashMap
-            info!("  {}: {} files", ext, count);
-        }*/
-
-        // Summarize files not downloaded
-        let failed_downloads = service.get_failed_downloads().await; // Add .await
-        if !failed_downloads.is_empty() {
-            warn!("\nSummary of files not downloaded:");
-            for url in failed_downloads.into_iter() {
-                // Use into_iter() on the Vec
-                warn!("  {}", url);
+        // Create a timeout for the entire download process
+        let download_timeout = std::time::Duration::from_secs(7200); // 2 hours total timeout
+        
+        match tokio::time::timeout(download_timeout, async {
+            // Process all sources
+            if let Err(e) = service.process_sources().await {
+                warn!("Errors occurred during initial processing: {}", e);
             }
-        } else {
-            info!("\nAll files downloaded successfully.");
-        }
 
-        // Get and display download report
-        let report = service.get_download_report().await;
-        report.print_summary();
+            // Retry failed downloads
+            info!("Starting retry phase...");
+            if let Err(e) = service.retry_failed_downloads().await {
+                warn!("Errors occurred during retry attempts: {}", e);
+            }
+            info!("Retry phase completed.");
+
+            // Get and display file type statistics
+            /*let stats = service.get_file_type_stats().await; // Add .await
+            info!("\nFile format summary:");
+            for (ext, count) in stats.into_iter() {
+                // Use into_iter() on the HashMap
+                info!("  {}: {} files", ext, count);
+            }*/
+
+            // Summarize files not downloaded
+            info!("Getting failed downloads list...");
+            let failed_downloads = service.get_failed_downloads().await; // Add .await
+            info!("Got {} failed downloads", failed_downloads.len());
+            if !failed_downloads.is_empty() {
+                warn!("\nSummary of files not downloaded:");
+                for url in failed_downloads.into_iter() {
+                    // Use into_iter() on the Vec
+                    warn!("  {}", url);
+                }
+            } else {
+                info!("\nAll files downloaded successfully.");
+            }
+
+            // Export 403 errors to JSON file for exclusion patterns
+            info!("Exporting 403 Forbidden errors to JSON...");
+            if let Err(e) = service.output_403_errors_to_json(&download_path).await {
+                warn!("Failed to export 403 errors to JSON: {}", e);
+            }
+
+            // Get and display download report
+            info!("Generating download report...");
+            let report = service.get_download_report().await;
+            info!("Download report generated, printing summary...");
+            report.print_summary();
+            info!("Summary printed.");
+        }).await {
+            Ok(_) => info!("Download process completed successfully"),
+            Err(_) => {
+                warn!("Download process timed out after {:?}", download_timeout);
+                // Still try to get a final report
+                if let Ok(report) = tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    service.get_download_report()
+                ).await {
+                    warn!("Partial download report:");
+                    report.print_summary();
+                } else {
+                    warn!("Could not generate final report due to timeout");
+                }
+            }
+        }
     }
 
     let elapsed = start_time.elapsed();
@@ -149,5 +182,12 @@ async fn main() -> Result<()> {
     info!("  General:");
     info!("    Thread sleep: {} ms", config.general.thread_sleep_ms());
 
+    // Explicit cleanup - drop the service to ensure all async resources are cleaned up
+    drop(service);
+    
+    // Force a brief delay to allow any remaining async tasks to complete
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    
+    info!("Program cleanup completed.");
     Ok(())
 }

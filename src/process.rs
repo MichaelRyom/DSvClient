@@ -17,6 +17,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;  // Change to tokio's Mutex
 use std::pin::Pin;
 use std::future::Future;
+use url::Url;
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub enum Source {
@@ -175,10 +176,24 @@ impl ProcessManager {
     fn extract_meaningful_path(&self, path: &str) -> String {
         let path_segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         
-        // Look for common meaningful segments and extract from there
+        // Look for Broadcom-specific patterns first
         for (i, segment) in path_segments.iter().enumerate() {
+            // Look for Broadcom path structure: /PROD/COMP/ESX_HOST/ or /PROD/COMP/VCENTER/
+            if *segment == "ESX_HOST" {
+                // Skip ESX_HOST and start from the next segment
+                if i + 1 < path_segments.len() {
+                    return path_segments[(i + 1)..].join("/");
+                } else {
+                    // If ESX_HOST is the last segment, return empty or fallback
+                    return String::new();
+                }
+            } else if *segment == "VCENTER" {
+                // Start from VCENTER and include everything after (keep VCENTER in path)
+                return path_segments[i..].join("/");
+            }
+            
             // Look for VMware/ESX related segments
-            if segment.contains("vmtools") || segment.contains("ESX_HOST") || segment.contains("vib") {
+            if segment.contains("vmtools") || segment.contains("vib") {
                 // Start from this segment or a few segments before if they seem meaningful
                 let start_idx = if i > 0 && path_segments[i-1].len() > 3 && !path_segments[i-1].chars().all(|c| c.is_uppercase() || c.is_numeric()) {
                     i - 1
@@ -188,28 +203,68 @@ impl ProcessManager {
                 return path_segments[start_idx..].join("/");
             }
             
-            // Look for addon patterns
-            if *segment == "addon" || *segment == "main" || *segment == "iovp" {
-                return path_segments[i..].join("/");
+            // Look for addon patterns (after ESX_HOST/VCENTER check)
+            if segment.ends_with("-main") || *segment == "addon" || *segment == "main" || *segment == "iovp" {
+                // For Broadcom URLs, check if the parent is ESX_HOST or VCENTER
+                let start_idx = if i > 0 && path_segments[i-1] == "ESX_HOST" {
+                    // Skip ESX_HOST, start from current segment
+                    i
+                } else if i > 0 && path_segments[i-1] == "VCENTER" {
+                    // Include VCENTER in the path
+                    i - 1
+                } else {
+                    i
+                };
+                return path_segments[start_idx..].join("/");
             }
             
             // Look for common VMware patterns
-            if segment.ends_with("-main") || segment.contains("driver") || segment.contains("patch") {
+            if segment.contains("driver") || segment.contains("patch") {
                 return path_segments[i..].join("/");
             }
         }
         
-        // If no meaningful segment found, look for the last few segments that seem relevant
+        // For Broadcom URLs, look for meaningful segments after filtering generic ones
         if path_segments.len() > 3 {
-            // Skip generic segments like PROD, COMP, and take meaningful ones
-            let filtered: Vec<&str> = path_segments.iter()
-                .filter(|s| !matches!(s.to_uppercase().as_str(), "PROD" | "COMP" | "SOFTWARE" | "VUM" | "PRODUCTION"))
-                .filter(|s| s.len() > 2) // Skip very short segments
-                .cloned()
-                .collect();
+            // Skip generic segments like PROD, COMP, domain names, tokens, and take meaningful ones
+            let mut meaningful_segments = Vec::new();
+            let mut found_meaningful = false;
+            let mut skip_next = false;
+            
+            for (_i, segment) in path_segments.iter().enumerate() {
+                if skip_next {
+                    skip_next = false;
+                    continue;
+                }
                 
-            if filtered.len() >= 2 {
-                return filtered.join("/");
+                let upper_segment = segment.to_uppercase();
+                
+                // Skip common generic segments including ESX_HOST
+                if matches!(upper_segment.as_str(), "PROD" | "COMP" | "SOFTWARE" | "VUM" | "PRODUCTION" | "ESX_HOST") 
+                    || segment.starts_with("dl.") 
+                    || segment.contains(".com") 
+                    || segment.len() > 20 // Likely a token
+                {
+                    continue;
+                }
+                
+                // Skip protocol scheme
+                if *segment == "https:" {
+                    skip_next = true; // Also skip the empty segment after ://
+                    continue;
+                }
+                
+                // Skip very short segments at the beginning unless we've found meaningful content
+                if segment.len() < 3 && !found_meaningful {
+                    continue;
+                }
+                
+                found_meaningful = true;
+                meaningful_segments.push(*segment);
+            }
+            
+            if !meaningful_segments.is_empty() {
+                return meaningful_segments.join("/");
             }
         }
         
@@ -225,9 +280,34 @@ impl ProcessManager {
             Source::Http(url) => {
                 info!("Downloading from {}", url);
                 let content = self.http_processor.read_content(&source).await?;
-                let target_path = self.base_path.join(
-                    url.split("VUM/PRODUCTION/").nth(1).unwrap_or(url)
-                );
+                
+                // Extract a meaningful path from the URL
+                let relative_path = if let Some(relative_idx) = url
+                    .find("VUM/PRODUCTION/")
+                    .map(|i| i + "VUM/PRODUCTION/".len())
+                {
+                    self.sanitize_path(&url[relative_idx..])
+                } else {
+                    // For non-VUM URLs (like Broadcom), extract meaningful path components
+                    if let Ok(parsed_url) = url::Url::parse(url) {
+                        let path = parsed_url.path().trim_start_matches('/');
+                        
+                        // Extract meaningful parts from the path
+                        let meaningful_path = self.extract_meaningful_path(path);
+                        self.sanitize_path(&meaningful_path)
+                    } else {
+                        // Fallback: sanitize the filename from URL
+                        self.sanitize_path(
+                            url.rsplit('/')
+                               .next()
+                               .unwrap_or(url)
+                        )
+                    }
+                };
+                
+                debug!("Path extraction debug - URL: {}, Extracted path: {}", url, relative_path);
+                
+                let target_path = self.base_path.join(&relative_path);
                 self.http_processor.save_content(&content, &target_path).await?;
                 content
             }

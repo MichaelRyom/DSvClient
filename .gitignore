@@ -2,3 +2,6 @@
 .vscode/launch.json
 .urls.yaml
 WARP.md
+/logs
+Cargo.lock
+IMPROVEMENTS_SUMMARY.md
