@@ -335,7 +335,7 @@ jobs:
         uses: houseabsolute/actions-rust-cross@v0
         with:
           target: x86_64-unknown-linux-gnu
-          args: "--locked --release"
+          args: "--release"
           strip: true
           
       - name: Upload Linux Artifact
@@ -403,7 +403,7 @@ jobs:
         uses: houseabsolute/actions-rust-cross@v0
         with:
           target: x86_64-apple-darwin
-          args: "--locked --release"
+          args: "--release"
           strip: true
           
       - name: Upload macOS Artifact
@@ -597,7 +597,7 @@ jobs:
         uses: houseabsolute/actions-rust-cross@v0
         with:
           target: x86_64-unknown-freebsd
-          args: "--locked --release"
+          args: "--release"
           strip: true
 
       - name: Verify Build Artifacts
