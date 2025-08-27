@@ -292,13 +292,6 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      - name: Publish Release
-        #if: steps.cache-release.outputs.cache-hit != 'true'
-        uses: houseabsolute/actions-rust-release@v0
-        with:
-          executable-name: DSvClient
-          target: x86_64-pc-windows-msvc
-          changes-file: Changes.md
 
   build-ubuntu:
     if: ${{ github.event.inputs.run_linux == 'true' }}
@@ -412,12 +405,6 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      - name: Publish Release
-        uses: houseabsolute/actions-rust-release@v0
-        with:
-          executable-name: DSvClient
-          target: x86_64-unknown-linux-gnu
-          changes-file: Changes.md
 
   build-macos:
     if: ${{ github.event.inputs.run_macos == 'true' }}
@@ -516,12 +503,6 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      - name: Publish Release
-        uses: houseabsolute/actions-rust-release@v0
-        with:
-          executable-name: DSvClient
-          target: x86_64-apple-darwin
-          changes-file: Changes.md
 
   build-freebsd:
     if: ${{ github.event.inputs.run_freebsd == 'true' }}
@@ -778,10 +759,3 @@ jobs:
           sudo chown -R root:root /var/cache/apt/archives/
         shell: bash
 
-      - name: Publish Release
-        #if: steps.cache-build.outputs.cache-hit != 'true'
-        uses: houseabsolute/actions-rust-release@v0
-        with:
-          executable-name: DSvClient
-          target: x86_64-unknown-freebsd
-          changes-file: Changes.md
