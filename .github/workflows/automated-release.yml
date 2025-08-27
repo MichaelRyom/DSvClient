@@ -217,87 +217,10 @@ jobs:
           path: package-linux/
           retention-days: 1
 
-  build-macos:
-    needs: check-version
-    if: needs.check-version.outputs.should_build == 'true'
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Install Dependencies
-        run: |
-          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
-
-      - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          target: x86_64-apple-darwin
-          profile: minimal
-          override: true
-
-      - name: Build Release
-        uses: houseabsolute/actions-rust-cross@v0
-        with:
-          target: x86_64-apple-darwin
-          args: "--release"
-          strip: true
-
-      - name: Create macOS Release Package
-        run: |
-          VERSION="${{ needs.check-version.outputs.version }}"
-          mkdir -p package-macos
-          
-          # Copy binary
-          cp target/x86_64-apple-darwin/release/DSvClient package-macos/
-          chmod +x package-macos/DSvClient
-          
-          # Copy config files
-          cp config.toml package-macos/
-          cp sources.toml package-macos/
-          
-          # Create version info file
-          cat > package-macos/VERSION.txt << EOF
-          DSvClient macOS Release
-          Version: $VERSION
-          Platform: macOS x64
-          Built: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-          Commit: ${{ github.sha }}
-          EOF
-          
-          # Create README
-          cat > package-macos/README.md << EOF
-          # DSvClient macOS Release v$VERSION
-          
-          ## Files included:
-          - DSvClient - The main executable
-          - config.toml - Configuration file (customize as needed)
-          - sources.toml - Sources configuration (add your sources here)
-          - VERSION.txt - Build information
-          
-          ## Usage:
-          1. Make executable: \`chmod +x DSvClient\`
-          2. Edit config.toml to customize settings
-          3. Edit sources.toml to add your download sources
-          4. Run: \`./DSvClient <download_path>\`
-          
-          Note: On macOS you may need to allow the binary in System Preferences > Security & Privacy.
-          
-          For more information, visit: https://github.com/MichaelRyom/DSvClient
-          EOF
-
-      - name: Upload macOS Package
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-package
-          path: package-macos/
-          retention-days: 1
 
   # Job to commit all packages to the repository
   commit-releases:
-    needs: [check-version, build-windows, build-linux, build-macos]
+    needs: [check-version, build-windows, build-linux]
     if: needs.check-version.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -404,8 +327,7 @@ jobs:
           echo "" >> releases/README.md
           echo "Each release includes packages for:" >> releases/README.md
           echo "- Windows (x64)" >> releases/README.md
-          echo "- Linux (x64)" >> releases/README.md  
-          echo "- macOS (x64)" >> releases/README.md
+          echo "- Linux (x64)" >> releases/README.md
 
       - name: Commit and push releases
         run: |
@@ -419,11 +341,10 @@ jobs:
             exit 0
           fi
           
-          git commit -m "🚀 Release v$VERSION - Add build artifacts for all platforms
+          git commit -m "🚀 Release v$VERSION - Add build artifacts for Windows and Linux
 
           - Windows x64 package: releases/v$VERSION/windows/
           - Linux x64 package: releases/v$VERSION/linux/
-          - macOS x64 package: releases/v$VERSION/macos/
           - Updated latest symlink to point to v$VERSION
           
           Built from commit: ${{ github.sha }}"
@@ -444,11 +365,10 @@ jobs:
                   git reset --hard HEAD~1
                   git pull origin Main
                   git add releases/
-                  git commit -m "🚀 Release v$VERSION - Add build artifacts for all platforms
+                  git commit -m "🚀 Release v$VERSION - Add build artifacts for Windows and Linux
 
                   - Windows x64 package: releases/v$VERSION/windows/
                   - Linux x64 package: releases/v$VERSION/linux/
-                  - macOS x64 package: releases/v$VERSION/macos/
                   - Updated latest symlink to point to v$VERSION
                   
                   Built from commit: ${{ github.sha }}"
