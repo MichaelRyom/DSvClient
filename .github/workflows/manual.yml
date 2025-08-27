@@ -79,10 +79,8 @@ jobs:
             C:/tools/psutils
             C:/ProgramData/chocolatey/lib/dos2unix
             C:/ProgramData/chocolatey/lib/7zip.install
-            ~/.cargo/bin/sccache
-            C:/Users/runneradmin/.cargo/bin/sccache
             C:/Users/runneradmin/.cargo/config.toml
-          key: windows-custom-tools-v5-${{ hashFiles('**/Cargo.lock') }}
+          key: windows-custom-tools-v6-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache vcpkg (Windows)
         uses: actions/cache@v3
@@ -172,7 +170,8 @@ jobs:
         if: steps.custom-tools-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          cargo install sccache --version=0.9.0
+          # Skip sccache installation due to windows_sys compatibility issues
+          # cargo install sccache --version=0.9.0
           # Add cache configuration
           $cargoConfig = @"
           [build]
