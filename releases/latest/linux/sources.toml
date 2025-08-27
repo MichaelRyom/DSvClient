@@ -1,0 +1,110 @@
+# Global Broadcom download token (used for all sources unless overridden)
+downloadToken = ""
+
+# Broadcom ESXi Update Sources (uses global download token)
+[[sources]]
+url = "https://dl.broadcom.com/<downloadToken>/PROD/COMP/ESX_HOST/addon-main/vmw-depot-index.xml"
+enabled = true
+status = "Connected"
+vendor = "Broadcom"
+type = "Host"
+description = "Partner provided Addons for ESXi"
+
+[[sources]]
+url = "https://dl.broadcom.com/<downloadToken>/PROD/COMP/ESX_HOST/main/vmw-depot-index.xml"
+enabled = true
+status = "Connected"
+vendor = "Broadcom"
+type = "Host"
+description = "Download vSphere ESXi and ESX patches"
+
+[[sources]]
+url = "https://dl.broadcom.com/<downloadToken>/PROD/COMP/ESX_HOST/iovp-main/vmw-depot-index.xml"
+enabled = true
+status = "Connected"
+vendor = "Broadcom"
+type = "Host"
+description = "VMware Certified Async Drivers for ESXi"
+
+[[sources]]
+url = "https://dl.broadcom.com/<downloadToken>/PROD/COMP/ESX_HOST/vmtools-main/vmw-depot-index.xml"
+enabled = true
+status = "Connected"
+vendor = "Broadcom"
+type = "Host"
+description = "VMware Async Releases for VM-tools on ESXi"
+
+[[sources]]
+url = "https://partnerweb.vmware.com/service/vsan/all.json"
+enabled = true
+status = "Connected"
+vendor = "VMware"
+type = "File"
+description = "vSAN HCL list"
+
+[[sources]]
+url = "https://vcsa.vmware.com/ph/api/v1/results?deploymentId=2d02e861-7e93-4954-9a73-b08692a330d1&collectorId=VsanCloudHealth.6_5&objectId=0c3e9009-ba5d-4e5f6-bae8-f25ec506d219&type=vsan-updates-json"
+enabled = true
+status = "Connected"
+vendor = "VMware"
+type = "File"
+description = "vSAN Release catalog"
+
+# Build info is available 
+# https://www.virten.net/vmware/vcenter-release-and-build-number-history/
+# https://knowledge.broadcom.com/external/article/326316/build-numbers-and-versions-of-vmware-vce.html
+[[sources]]
+url = "https://dl.broadcom.com/<downloadToken>/PROD/COMP/VCENTER/vmw/8d167796-34d5-4899-be0a-6daade4005a3"  # Base URL without version
+version = "7.0.3.02200"
+files = [
+    "manifest/manifest-latest.xml",
+    "manifest/manifest-latest.xml.sha256",
+    "manifest/manifest-latest.xml.sign",
+    "package-pool/rpm-manifest.json",
+    "package-pool/rpm-manifest.json.sha256",
+    "package-pool/rpm-manifest.json.sign"
+]
+enabled = true
+status = "Connected"
+vendor = "Broadcom"
+type = "VCSA"
+description = "vCenter 7.x upgrade patches"
+
+[[sources]]
+url = "https://dl.broadcom.com/<downloadToken>/PROD/COMP/VCENTER/vmw/8d167796-34d5-4899-be0a-6daade4005a3"  # Base URL without version
+version = "8.0.3.00400"
+files = [
+    "manifest/manifest-latest.xml",
+    "manifest/manifest-latest.xml.sha256",
+    "manifest/manifest-latest.xml.sign",
+    "package-pool/rpm-manifest.json",
+    "package-pool/rpm-manifest.json.sha256",
+    "package-pool/rpm-manifest.json.sign"
+]
+enabled = true
+status = "Connected"
+vendor = "Broadcom"
+type = "VCSA"
+description = "vCenter 8.x upgrade patches"
+
+# Example of a source with its own download token (overrides global)
+# [[sources]]
+# url = "https://dl.broadcom.com/<downloadToken>/PROD/COMP/ESX_HOST/special/vmw-depot-index.xml"
+# downloadToken = "SPECIAL_TOKEN_FOR_THIS_SOURCE"
+# enabled = true
+# vendor = "Broadcom"
+# type = "Host"
+# description = "Special source with custom token"
+
+# VMware VVS (vSphere Version and Vulnerability Status) API with OAuth authentication
+[[sources]]
+url = "https://vvs.broadcom.com/v1/compatible/vcg/bundles/all?format=gz"
+enabled = true
+status = "Connected"
+vendor = "Broadcom"
+type = "OAuth"
+description = "VMware vSphere VVS compatibility data with OAuth authentication"
+client_id = "vsphere_hcllib"
+client_secret = "cb65f5ac-cb38-4326-a48f-c0e8b23a2d38"
+auth_url = "https://auth.esp.vmware.com/api/auth/v1/tokens"
+output_filename = "vvs_data.gz"  # Optional: defaults to vvs_data.gz

@@ -1,0 +1,5 @@
+DSvClient macOS Release
+Version: 0.6.0
+Platform: macOS x64
+Built: 2025-08-27 18:28:51 UTC
+Commit: 615304ee995020228add89ddf73f3beb3296a0e6

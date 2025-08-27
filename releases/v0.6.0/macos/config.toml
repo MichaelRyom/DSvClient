@@ -1,0 +1,62 @@
+[verification]
+# Default chunk_size = 262144 (256KB)
+# Uncomment the line below to set a customize
+# chunk_size = 262144
+
+# Default max_concurrent_files = 10 
+# (Use a number equal or higher than max_concurrent_verifications for high performance CPU utilization/ to bring down time used verifing files hashes)
+# Uncomment the line below to set a customize
+# max_concurrent_files = 100
+
+# Default max_concurrent_verifications = num_cpus * 4
+# Uncomment the line below to set a customize
+# max_concurrent_verifications = 128
+
+[download]
+# Default max_concurrent_downloads = 10
+# Uncomment the line below to set a customize
+# max_concurrent_downloads = 10
+
+# Default buffer_size 8388608 = 8MB
+# Uncomment the line below to set a customize
+# buffer_size = 8388608
+
+[general]
+# Default thread_sleep_ms = 0
+# Uncomment the line below to set a customize
+# thread_sleep_ms = 0
+
+[logging]
+# Default log_path = logs - This means it will save to a folder in the source execution file directory
+# Uncomment the line below to set a customize
+# log_path = '''C:\temp\logs'''
+
+# Name of the log file (default: "DSvClient.log")
+# Uncomment the line below to set a customize
+# log_file = "DSvClient.log"
+
+# Terminal log level: Error, Warn, Info, Debug, Trace (default: "Info")
+# Uncomment the line below to set a customize
+# term_level = "Debug"
+
+# File log level: Error, Warn, Info, Debug, Trace (default: "Warn")
+# Uncomment the line below to set a customize
+# file_level = "Trace"
+
+[exclude]
+# List of patterns to exclude from processing
+# Supports full URLs or partial matches
+# Always use forward slashes (/) in patterns, they will match both / and \ in paths
+# Examples
+# "vmw/vib20/tools-light",  # Example: exclude partial url
+# "https://hostupdate.vmware.com/software/VUM/PRODUCTION/vmtools-main/",  # Example: full URL
+# "VMware_locker*.vib",  # Example: exclude file pattern
+# ".vib",  # Example: exclude file extention
+
+# Optional: Load additional exclusion patterns from a file
+# The file should contain one pattern per line, comments (lines starting with #) are ignored
+# Patterns from both 'patterns' and 'exclude_file' will be combined
+# exclude_file = "exclusions.json"
+
+patterns = [
+]
