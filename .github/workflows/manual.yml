@@ -281,14 +281,11 @@ jobs:
           For more information, visit: https://github.com/MichaelRyom/DSvClient
           "@ | Out-File -FilePath "release-windows/README.txt" -Encoding UTF8
           
-          # Create zip file
-          Compress-Archive -Path "release-windows/*" -DestinationPath "DSvClient-windows.zip" -CompressionLevel Optimal
-
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
           name: DSvClient-windows
-          path: DSvClient-windows.zip
+          path: release-windows/
           retention-days: 7
           if-no-files-found: error
 
@@ -394,14 +391,11 @@ jobs:
           For more information, visit: https://github.com/MichaelRyom/DSvClient
           EOF
           
-          # Create tar.gz file
-          tar -czf DSvClient-linux.tar.gz -C release-linux .
-          
       - name: Upload Linux Artifact
         uses: actions/upload-artifact@v4
         with:
           name: DSvClient-linux
-          path: DSvClient-linux.tar.gz
+          path: release-linux/
           retention-days: 7
           if-no-files-found: error
 
@@ -492,14 +486,11 @@ jobs:
           For more information, visit: https://github.com/MichaelRyom/DSvClient
           EOF
           
-          # Create tar.gz file
-          tar -czf DSvClient-macos.tar.gz -C release-macos .
-          
       - name: Upload macOS Artifact
         uses: actions/upload-artifact@v4
         with:
           name: DSvClient-macos
-          path: DSvClient-macos.tar.gz
+          path: release-macos/
           retention-days: 7
           if-no-files-found: error
 
@@ -720,14 +711,11 @@ jobs:
           For more information, visit: https://github.com/MichaelRyom/DSvClient
           EOF
           
-          # Create tar.gz file
-          tar -czf DSvClient-freebsd.tar.gz -C release-freebsd .
-        
       - name: Upload FreeBSD Artifact
         uses: actions/upload-artifact@v4
         with:
           name: DSvClient-freebsd
-          path: DSvClient-freebsd.tar.gz
+          path: release-freebsd/
           retention-days: 7
           if-no-files-found: error
 
