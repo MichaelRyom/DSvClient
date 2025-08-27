@@ -251,11 +251,44 @@ jobs:
             }
           }
           
+      - name: Create Windows Release Package
+        shell: pwsh
+        run: |
+          # Create release directory
+          New-Item -Path "release-windows" -ItemType Directory -Force
+          
+          # Copy binary
+          Copy-Item "target/x86_64-pc-windows-msvc/release/DSvClient.exe" "release-windows/"
+          
+          # Copy config files
+          Copy-Item "config.toml" "release-windows/"
+          Copy-Item "sources.toml" "release-windows/"
+          
+          # Create README for the package
+          @"
+          # DSvClient Windows Release
+          
+          ## Files included:
+          - DSvClient.exe - The main executable
+          - config.toml - Configuration file (customize as needed)
+          - sources.toml - Sources configuration (add your sources here)
+          
+          ## Usage:
+          1. Edit config.toml to customize settings
+          2. Edit sources.toml to add your download sources
+          3. Run: .\DSvClient.exe
+          
+          For more information, visit: https://github.com/MichaelRyom/DSvClient
+          "@ | Out-File -FilePath "release-windows/README.txt" -Encoding UTF8
+          
+          # Create zip file
+          Compress-Archive -Path "release-windows/*" -DestinationPath "DSvClient-windows.zip" -CompressionLevel Optimal
+
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
           name: DSvClient-windows
-          path: target/x86_64-pc-windows-msvc/release/DSvClient.exe
+          path: DSvClient-windows.zip
           retention-days: 7
           if-no-files-found: error
 
@@ -336,12 +369,46 @@ jobs:
           target: x86_64-unknown-linux-gnu
           args: "--release"
           strip: true
+
+      - name: Create Linux Release Package
+        shell: bash
+        run: |
+          # Create release directory
+          mkdir -p release-linux
+          
+          # Copy binary
+          cp target/x86_64-unknown-linux-gnu/release/DSvClient release-linux/
+          
+          # Copy config files
+          cp config.toml release-linux/
+          cp sources.toml release-linux/
+          
+          # Create README for the package
+          cat > release-linux/README.md << 'EOF'
+          # DSvClient Linux Release
+          
+          ## Files included:
+          - DSvClient - The main executable
+          - config.toml - Configuration file (customize as needed)
+          - sources.toml - Sources configuration (add your sources here)
+          
+          ## Usage:
+          1. Make the binary executable: `chmod +x DSvClient`
+          2. Edit config.toml to customize settings
+          3. Edit sources.toml to add your download sources
+          4. Run: `./DSvClient`
+          
+          For more information, visit: https://github.com/MichaelRyom/DSvClient
+          EOF
+          
+          # Create tar.gz file
+          tar -czf DSvClient-linux.tar.gz -C release-linux .
           
       - name: Upload Linux Artifact
         uses: actions/upload-artifact@v4
         with:
           name: DSvClient-linux
-          path: target/x86_64-unknown-linux-gnu/release/DSvClient
+          path: DSvClient-linux.tar.gz
           retention-days: 7
           if-no-files-found: error
 
@@ -404,12 +471,48 @@ jobs:
           target: x86_64-apple-darwin
           args: "--release"
           strip: true
+
+      - name: Create macOS Release Package
+        shell: bash
+        run: |
+          # Create release directory
+          mkdir -p release-macos
+          
+          # Copy binary
+          cp target/x86_64-apple-darwin/release/DSvClient release-macos/
+          
+          # Copy config files
+          cp config.toml release-macos/
+          cp sources.toml release-macos/
+          
+          # Create README for the package
+          cat > release-macos/README.md << 'EOF'
+          # DSvClient macOS Release
+          
+          ## Files included:
+          - DSvClient - The main executable
+          - config.toml - Configuration file (customize as needed)
+          - sources.toml - Sources configuration (add your sources here)
+          
+          ## Usage:
+          1. Make the binary executable: `chmod +x DSvClient`
+          2. Edit config.toml to customize settings
+          3. Edit sources.toml to add your download sources
+          4. Run: `./DSvClient`
+          
+          Note: On macOS you may need to allow the binary in System Preferences > Security & Privacy if you get a security warning.
+          
+          For more information, visit: https://github.com/MichaelRyom/DSvClient
+          EOF
+          
+          # Create tar.gz file
+          tar -czf DSvClient-macos.tar.gz -C release-macos .
           
       - name: Upload macOS Artifact
         uses: actions/upload-artifact@v4
         with:
           name: DSvClient-macos
-          path: target/x86_64-apple-darwin/release/DSvClient
+          path: DSvClient-macos.tar.gz
           retention-days: 7
           if-no-files-found: error
 
@@ -604,12 +707,46 @@ jobs:
           ls -la target/x86_64-unknown-freebsd/release/ || true
           ls -la target/release/ || true
         shell: bash
+
+      - name: Create FreeBSD Release Package
+        shell: bash
+        run: |
+          # Create release directory
+          mkdir -p release-freebsd
+          
+          # Copy binary
+          cp target/x86_64-unknown-freebsd/release/DSvClient release-freebsd/
+          
+          # Copy config files
+          cp config.toml release-freebsd/
+          cp sources.toml release-freebsd/
+          
+          # Create README for the package
+          cat > release-freebsd/README.md << 'EOF'
+          # DSvClient FreeBSD Release
+          
+          ## Files included:
+          - DSvClient - The main executable
+          - config.toml - Configuration file (customize as needed)
+          - sources.toml - Sources configuration (add your sources here)
+          
+          ## Usage:
+          1. Make the binary executable: `chmod +x DSvClient`
+          2. Edit config.toml to customize settings
+          3. Edit sources.toml to add your download sources
+          4. Run: `./DSvClient`
+          
+          For more information, visit: https://github.com/MichaelRyom/DSvClient
+          EOF
+          
+          # Create tar.gz file
+          tar -czf DSvClient-freebsd.tar.gz -C release-freebsd .
         
       - name: Upload FreeBSD Artifact
         uses: actions/upload-artifact@v4
         with:
           name: DSvClient-freebsd
-          path: target/x86_64-unknown-freebsd/release/DSvClient
+          path: DSvClient-freebsd.tar.gz
           retention-days: 7
           if-no-files-found: error
 
