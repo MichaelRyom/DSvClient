@@ -1,4 +1,4 @@
-# DSvClient Changelog
+# DSvClient
 
 Check out [https://michaelryom.dk/dsvclient-new-patch-downloading-tool-for-vcenter](https://michaelryom.dk/dsvclient-new-patch-downloading-tool-for-vcenter)
 
