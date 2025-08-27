@@ -21,6 +21,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use bytes::BytesMut;
 use futures::{Stream, StreamExt};
+use url::Url;
 
 //const MAX_CONCURRENT_DOWNLOADS: usize = 100;
 
@@ -227,6 +228,11 @@ struct SourceEntry {
     files: Option<Vec<String>>,
     #[serde(rename = "downloadToken")]
     download_token: Option<String>,
+    // OAuth-specific fields
+    client_id: Option<String>,
+    client_secret: Option<String>,
+    auth_url: Option<String>,
+    output_filename: Option<String>,
 }
 
 impl Downloader {
@@ -451,6 +457,40 @@ impl Downloader {
                             }
                         } else {
                             warn!("VCSA source missing version or files: {}", url);
+                        }
+                    }
+                    "OAuth" => {
+                        if let (Some(client_id), Some(client_secret), Some(auth_url)) = 
+                            (&source.client_id, &source.client_secret, &source.auth_url) {
+                            
+                            info!("Processing OAuth source: {}", url);
+                            
+                            // Get OAuth access token
+                            match this.get_oauth_token(auth_url, client_id, client_secret).await {
+                                Ok(access_token) => {
+                                    // Determine output filename
+                                    let output_filename = source.output_filename
+                                        .as_deref()
+                                        .unwrap_or("vvs_data.gz");
+                                    
+                                    let target_path = this.base_path.join(output_filename);
+                                    
+                                    // Download with OAuth token
+                                    match this.download_with_oauth(&url, &access_token, &target_path).await {
+                                        Ok(_) => {
+                                            info!("Successfully downloaded OAuth file to: {}", target_path.display());
+                                        }
+                                        Err(e) => {
+                                            warn!("Error downloading OAuth file {}: {}", url, e);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("Failed to get OAuth token for {}: {}", url, e);
+                                }
+                            }
+                        } else {
+                            warn!("OAuth source missing required fields (client_id, client_secret, auth_url): {}", url);
                         }
                     }
                     _ => warn!("Unsupported source type: {}", source.r#type),
@@ -1761,7 +1801,145 @@ impl Downloader {
             }
         }
         
-        // Final fallback: use the URL as-is
+    // Final fallback: use the URL as-is
         url.to_string()
+    }
+
+    // OAuth authentication helper methods
+    async fn get_oauth_token(&self, auth_url: &str, client_id: &str, client_secret: &str) -> Result<String> {
+        info!("Getting OAuth token from: {}", auth_url);
+        
+        // Create OAuth request body
+        let oauth_body = serde_json::json!({
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret
+        });
+        
+        let oauth_body_str = oauth_body.to_string();
+        
+        // Create a new client instance for OAuth request with Full body type
+        let https_connector = HttpsConnector::new();
+        let oauth_client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+            .build::<_, http_body_util::Full<Bytes>>(https_connector);
+            
+        // Make OAuth request
+        let request = hyper::Request::builder()
+            .method(hyper::Method::POST)
+            .uri(auth_url)
+            .header("Content-Type", "application/json")
+            .header("User-Agent", "DSvClient/1.0.0")
+            .body(http_body_util::Full::new(Bytes::from(oauth_body_str)))?;
+            
+        let response = oauth_client.request(request).await?;
+        
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!(
+                "OAuth token request failed with status: {}", 
+                response.status()
+            ));
+        }
+        
+        let body_bytes = http_body_util::BodyExt::collect(response.into_body())
+            .await?
+            .to_bytes();
+        let body_str = String::from_utf8(body_bytes.to_vec())?;
+        
+        // Parse response to extract access token
+        let token_response: serde_json::Value = serde_json::from_str(&body_str)?;
+        
+        let access_token = token_response
+            .get("access_token")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("No access_token in OAuth response"))?;
+            
+        info!("Successfully obtained OAuth access token");
+        Ok(access_token.to_string())
+    }
+    
+    async fn download_with_oauth(&self, url: &str, access_token: &str, target_path: &Path) -> Result<()> {
+        info!("Downloading OAuth-protected resource: {}", url);
+        
+        let mut current_url = url.to_string();
+        let mut redirect_count = 0;
+        const MAX_REDIRECTS: usize = 5;
+        
+        loop {
+            // Create request with OAuth token in X-Vmw-Esp-Client header
+            let request = hyper::Request::builder()
+                .method(hyper::Method::GET)
+                .uri(&current_url)
+                .header("X-Vmw-Esp-Client", access_token)
+                .header("User-Agent", "HCL_Python/1.0.0/python")
+                .body(http_body_util::Empty::<Bytes>::new())?;
+                
+            let response = self.client.request(request).await?;
+            let status = response.status();
+            
+            if status.is_success() {
+                // Success - process the response
+                info!("OAuth download successful after {} redirects", redirect_count);
+                
+                // Create parent directories if they don't exist
+                if let Some(parent) = target_path.parent() {
+                    tokio::fs::create_dir_all(parent).await?;
+                }
+                
+                // Download the response body
+                let body_bytes = http_body_util::BodyExt::collect(response.into_body())
+                    .await?
+                    .to_bytes();
+                    
+                // Save the file as-is without decompression
+                info!("Saving {} bytes to file", body_bytes.len());
+                tokio::fs::write(target_path, body_bytes).await?;
+                
+                info!("Successfully saved OAuth file to: {}", target_path.display());
+                return Ok(());
+            } else if status.is_redirection() {
+                // Handle redirect
+                if redirect_count >= MAX_REDIRECTS {
+                    return Err(anyhow::anyhow!(
+                        "Too many redirects ({}) for OAuth download: {}", 
+                        MAX_REDIRECTS, 
+                        url
+                    ));
+                }
+                
+                // Get the Location header for the redirect
+                let location = response.headers()
+                    .get("location")
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "Redirect response missing Location header for URL: {}", 
+                        current_url
+                    ))?;
+                
+                // Handle relative vs absolute URLs
+                current_url = if location.starts_with("http") {
+                    location.to_string()
+                } else {
+                    // Construct absolute URL from relative redirect
+                    let base_url = url::Url::parse(&current_url)?;
+                    base_url.join(location)?.to_string()
+                };
+                
+                redirect_count += 1;
+                info!("Following OAuth redirect #{} to: {}", redirect_count, current_url);
+                
+                // Consume the response body to avoid connection issues
+                let _ = http_body_util::BodyExt::collect(response.into_body()).await;
+                
+                // Continue the loop to make the redirected request
+                continue;
+            } else {
+                // Error status
+                return Err(anyhow::anyhow!(
+                    "OAuth download failed with status: {} for URL: {}", 
+                    status,
+                    current_url
+                ));
+            }
+        }
     }
 }

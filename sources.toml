@@ -95,3 +95,16 @@ description = "vCenter 8.x upgrade patches"
 # vendor = "Broadcom"
 # type = "Host"
 # description = "Special source with custom token"
+
+# VMware VVS (vSphere Version and Vulnerability Status) API with OAuth authentication
+[[sources]]
+url = "https://vvs.broadcom.com/v1/compatible/vcg/bundles/all?format=gz"
+enabled = true
+status = "Connected"
+vendor = "Broadcom"
+type = "OAuth"
+description = "VMware vSphere VVS compatibility data with OAuth authentication"
+client_id = "vsphere_hcllib"
+client_secret = "cb65f5ac-cb38-4326-a48f-c0e8b23a2d38"
+auth_url = "https://auth.esp.vmware.com/api/auth/v1/tokens"
+output_filename = "vvs_data.gz"  # Optional: defaults to vvs_data.gz
