@@ -1,0 +1,431 @@
+# Automated Release Workflow - Builds and commits packages to repository
+name: Automated Release
+
+# Triggers on push to Main branch and manual dispatch
+on:
+  push:
+    branches: [ Main ]
+    paths-ignore:
+      - 'releases/**'  # Don't trigger on release commits
+      - '*.md'         # Don't trigger on documentation changes
+      - '.gitignore'
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force rebuild even if version exists'
+        type: boolean
+        default: false
+
+jobs:
+  # First job: Extract version and check if we need to build
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      should_build: ${{ steps.check_exists.outputs.should_build }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from Cargo.toml
+        id: get_version
+        run: |
+          VERSION=$(grep '^version =' Cargo.toml | head -n 1 | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected version: $VERSION"
+
+      - name: Check if version already exists
+        id: check_exists
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          FORCE_REBUILD="${{ github.event.inputs.force_rebuild }}"
+          
+          if [[ -d "releases/v$VERSION" && "$FORCE_REBUILD" != "true" ]]; then
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "Version v$VERSION already exists in releases and force_rebuild is not set"
+          else
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "Building version v$VERSION (force_rebuild: $FORCE_REBUILD)"
+          fi
+
+  # Build jobs (run in parallel if we need to build)
+  build-windows:
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: windows-latest
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      CARGO_NET_RETRY: 10
+      VCPKG_ROOT: C:\vcpkg
+      OPENSSL_DIR: C:/vcpkg/installed/x64-windows-static
+      OPENSSL_STATIC: 1
+      OPENSSL_LIB_DIR: C:/vcpkg/installed/x64-windows-static/lib
+      OPENSSL_INCLUDE_DIR: C:/vcpkg/installed/x64-windows-static/include
+      CMAKE_TOOLCHAIN_FILE: C:/vcpkg/scripts/buildsystems/vcpkg.cmake
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Cache vcpkg
+        uses: actions/cache@v3
+        with:
+          path: C:/vcpkg/installed
+          key: windows-vcpkg-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-vcpkg-
+
+      - name: Install Dependencies
+        shell: pwsh
+        run: |
+          vcpkg integrate install
+          vcpkg install openssl:x64-windows-static
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-pc-windows-msvc
+          profile: minimal
+          override: true
+
+      - name: Build Release
+        shell: pwsh
+        run: |
+          $env:CARGO_TARGET_DIR = Join-Path (Get-Location) "target"
+          cargo build --release --target x86_64-pc-windows-msvc --verbose
+
+      - name: Create Windows Release Package
+        shell: pwsh
+        run: |
+          $VERSION = "${{ needs.check-version.outputs.version }}"
+          New-Item -Path "package-windows" -ItemType Directory -Force
+          
+          # Copy binary
+          Copy-Item "target/x86_64-pc-windows-msvc/release/DSvClient.exe" "package-windows/"
+          
+          # Copy config files
+          Copy-Item "config.toml" "package-windows/"
+          Copy-Item "sources.toml" "package-windows/"
+          
+          # Create version info file
+          @"
+          DSvClient Windows Release
+          Version: $VERSION
+          Platform: Windows x64
+          Built: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
+          Commit: ${{ github.sha }}
+          "@ | Out-File -FilePath "package-windows/VERSION.txt" -Encoding UTF8
+          
+          # Create README
+          @"
+          # DSvClient Windows Release v$VERSION
+          
+          ## Files included:
+          - DSvClient.exe - The main executable
+          - config.toml - Configuration file (customize as needed)
+          - sources.toml - Sources configuration (add your sources here)
+          - VERSION.txt - Build information
+          
+          ## Usage:
+          1. Edit config.toml to customize settings
+          2. Edit sources.toml to add your download sources
+          3. Run: .\DSvClient.exe <download_path>
+          
+          For more information, visit: https://github.com/MichaelRyom/DSvClient
+          "@ | Out-File -FilePath "package-windows/README.md" -Encoding UTF8
+
+      - name: Upload Windows Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-package
+          path: package-windows/
+          retention-days: 1
+
+  build-linux:
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-unknown-linux-gnu
+          profile: minimal
+          override: true
+
+      - name: Build Release
+        uses: houseabsolute/actions-rust-cross@v0
+        with:
+          target: x86_64-unknown-linux-gnu
+          args: "--release"
+          strip: true
+
+      - name: Create Linux Release Package
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          mkdir -p package-linux
+          
+          # Copy binary
+          cp target/x86_64-unknown-linux-gnu/release/DSvClient package-linux/
+          chmod +x package-linux/DSvClient
+          
+          # Copy config files
+          cp config.toml package-linux/
+          cp sources.toml package-linux/
+          
+          # Create version info file
+          cat > package-linux/VERSION.txt << EOF
+          DSvClient Linux Release
+          Version: $VERSION
+          Platform: Linux x64
+          Built: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          Commit: ${{ github.sha }}
+          EOF
+          
+          # Create README
+          cat > package-linux/README.md << EOF
+          # DSvClient Linux Release v$VERSION
+          
+          ## Files included:
+          - DSvClient - The main executable
+          - config.toml - Configuration file (customize as needed)
+          - sources.toml - Sources configuration (add your sources here)
+          - VERSION.txt - Build information
+          
+          ## Usage:
+          1. Make executable: \`chmod +x DSvClient\`
+          2. Edit config.toml to customize settings
+          3. Edit sources.toml to add your download sources
+          4. Run: \`./DSvClient <download_path>\`
+          
+          For more information, visit: https://github.com/MichaelRyom/DSvClient
+          EOF
+
+      - name: Upload Linux Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-package
+          path: package-linux/
+          retention-days: 1
+
+  build-macos:
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Dependencies
+        run: |
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-apple-darwin
+          profile: minimal
+          override: true
+
+      - name: Build Release
+        uses: houseabsolute/actions-rust-cross@v0
+        with:
+          target: x86_64-apple-darwin
+          args: "--release"
+          strip: true
+
+      - name: Create macOS Release Package
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          mkdir -p package-macos
+          
+          # Copy binary
+          cp target/x86_64-apple-darwin/release/DSvClient package-macos/
+          chmod +x package-macos/DSvClient
+          
+          # Copy config files
+          cp config.toml package-macos/
+          cp sources.toml package-macos/
+          
+          # Create version info file
+          cat > package-macos/VERSION.txt << EOF
+          DSvClient macOS Release
+          Version: $VERSION
+          Platform: macOS x64
+          Built: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          Commit: ${{ github.sha }}
+          EOF
+          
+          # Create README
+          cat > package-macos/README.md << EOF
+          # DSvClient macOS Release v$VERSION
+          
+          ## Files included:
+          - DSvClient - The main executable
+          - config.toml - Configuration file (customize as needed)
+          - sources.toml - Sources configuration (add your sources here)
+          - VERSION.txt - Build information
+          
+          ## Usage:
+          1. Make executable: \`chmod +x DSvClient\`
+          2. Edit config.toml to customize settings
+          3. Edit sources.toml to add your download sources
+          4. Run: \`./DSvClient <download_path>\`
+          
+          Note: On macOS you may need to allow the binary in System Preferences > Security & Privacy.
+          
+          For more information, visit: https://github.com/MichaelRyom/DSvClient
+          EOF
+
+      - name: Upload macOS Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-package
+          path: package-macos/
+          retention-days: 1
+
+  # Job to commit all packages to the repository
+  commit-releases:
+    needs: [check-version, build-windows, build-linux, build-macos]
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+
+      - name: Download all packages
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Organize releases
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          
+          # Create version-specific directory
+          mkdir -p "releases/v$VERSION"
+          
+          # Copy each platform package
+          if [ -d "artifacts/windows-package" ]; then
+            mkdir -p "releases/v$VERSION/windows"
+            cp -r artifacts/windows-package/* "releases/v$VERSION/windows/"
+          fi
+          
+          if [ -d "artifacts/linux-package" ]; then
+            mkdir -p "releases/v$VERSION/linux"
+            cp -r artifacts/linux-package/* "releases/v$VERSION/linux/"
+          fi
+          
+          if [ -d "artifacts/macos-package" ]; then
+            mkdir -p "releases/v$VERSION/macos"
+            cp -r artifacts/macos-package/* "releases/v$VERSION/macos/"
+          fi
+          
+          # Create release info
+          cat > "releases/v$VERSION/RELEASE_INFO.md" << EOF
+          # DSvClient Release v$VERSION
+          
+          **Release Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          **Commit:** ${{ github.sha }}
+          **Branch:** ${{ github.ref_name }}
+          
+          ## Available Platforms
+          
+          EOF
+          
+          # Add platform info
+          for platform in windows linux macos; do
+            if [ -d "releases/v$VERSION/$platform" ]; then
+              echo "- **$platform**: \`releases/v$VERSION/$platform/\`" >> "releases/v$VERSION/RELEASE_INFO.md"
+            fi
+          done
+          
+          echo "" >> "releases/v$VERSION/RELEASE_INFO.md"
+          echo "## Usage" >> "releases/v$VERSION/RELEASE_INFO.md"
+          echo "Download the appropriate platform package and follow the README.md instructions in each platform folder." >> "releases/v$VERSION/RELEASE_INFO.md"
+
+      - name: Update latest symlink
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          
+          # Remove old latest directory if it exists
+          rm -rf releases/latest
+          
+          # Create new latest directory as a copy (not symlink for better GitHub compatibility)
+          cp -r "releases/v$VERSION" releases/latest
+          
+          # Update the release info for latest
+          sed "s/v$VERSION/latest (v$VERSION)/" "releases/v$VERSION/RELEASE_INFO.md" > releases/latest/RELEASE_INFO.md
+
+      - name: Create releases index
+        run: |
+          echo "# DSvClient Releases" > releases/README.md
+          echo "" >> releases/README.md
+          echo "This directory contains all released versions of DSvClient." >> releases/README.md
+          echo "" >> releases/README.md
+          echo "## Available Releases" >> releases/README.md
+          echo "" >> releases/README.md
+          
+          # List all version directories
+          for version_dir in releases/v*; do
+            if [ -d "$version_dir" ]; then
+              version=$(basename "$version_dir")
+              echo "- **$version**: [\`releases/$version/\`](./$version/)" >> releases/README.md
+            fi
+          done
+          
+          echo "" >> releases/README.md
+          echo "## Latest Release" >> releases/README.md
+          echo "" >> releases/README.md
+          echo "- **latest**: [\`releases/latest/\`](./latest/) - Points to the most recent release" >> releases/README.md
+          echo "" >> releases/README.md
+          echo "## Platform Support" >> releases/README.md
+          echo "" >> releases/README.md
+          echo "Each release includes packages for:" >> releases/README.md
+          echo "- Windows (x64)" >> releases/README.md
+          echo "- Linux (x64)" >> releases/README.md  
+          echo "- macOS (x64)" >> releases/README.md
+
+      - name: Commit and push releases
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          
+          git add releases/
+          
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          
+          git commit -m "🚀 Release v$VERSION - Add build artifacts for all platforms
+
+          - Windows x64 package: releases/v$VERSION/windows/
+          - Linux x64 package: releases/v$VERSION/linux/
+          - macOS x64 package: releases/v$VERSION/macos/
+          - Updated latest symlink to point to v$VERSION
+          
+          Built from commit: ${{ github.sha }}"
+          
+          git push origin Main
