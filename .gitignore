@@ -5,3 +5,4 @@ WARP.md
 /logs
 Cargo.lock
 IMPROVEMENTS_SUMMARY.md
+exclusions.json
