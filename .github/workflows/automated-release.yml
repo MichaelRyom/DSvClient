@@ -428,4 +428,35 @@ jobs:
           
           Built from commit: ${{ github.sha }}"
           
-          git push origin Main
+          # Retry push with pull if needed (handle race conditions)
+          for i in {1..3}; do
+            if git push origin Main; then
+              echo "Successfully pushed on attempt $i"
+              break
+            else
+              echo "Push failed on attempt $i, trying to pull and rebase..."
+              if [ $i -lt 3 ]; then
+                git pull --rebase origin Main
+                # Check if rebase was successful
+                if [ $? -ne 0 ]; then
+                  echo "Rebase failed, aborting and retrying from scratch"
+                  git rebase --abort
+                  git reset --hard HEAD~1
+                  git pull origin Main
+                  git add releases/
+                  git commit -m "🚀 Release v$VERSION - Add build artifacts for all platforms
+
+                  - Windows x64 package: releases/v$VERSION/windows/
+                  - Linux x64 package: releases/v$VERSION/linux/
+                  - macOS x64 package: releases/v$VERSION/macos/
+                  - Updated latest symlink to point to v$VERSION
+                  
+                  Built from commit: ${{ github.sha }}"
+                fi
+                sleep 5
+              else
+                echo "Failed to push after 3 attempts"
+                exit 1
+              fi
+            fi
+          done
