@@ -17,6 +17,37 @@ mod verify;
 
 use crate::config::AppConfig; // Use renamed import
 
+// Version information from Cargo.toml
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const PKG_NAME: &str = env!("CARGO_PKG_NAME");
+const PKG_DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
+
+fn show_version() {
+    println!("{} v{}", PKG_NAME, VERSION);
+}
+
+fn show_help(program_name: &str) {
+    println!("{} v{}", PKG_NAME, VERSION);
+    if !PKG_DESCRIPTION.is_empty() {
+        println!("{}", PKG_DESCRIPTION);
+    }
+    println!();
+    println!("USAGE:");
+    println!("    {} <download_path> [OPTIONS]", program_name);
+    println!();
+    println!("ARGS:");
+    println!("    <download_path>    Directory where downloaded files will be stored");
+    println!();
+    println!("OPTIONS:");
+    println!("    --verify          Verify existing files instead of downloading");
+    println!("    --version         Print version information");
+    println!("    --help            Print this help message");
+    println!();
+    println!("EXAMPLES:");
+    println!("    {} /tmp/vmware-patches          # Download patches to /tmp/vmware-patches", program_name);
+    println!("    {} /tmp/vmware-patches --verify # Verify existing files", program_name);
+}
+
 fn fail_and_exit(start_time: &std::time::Instant, message: &str) -> ! {
     info!("Execution failed after {:?}: {}", start_time.elapsed(), message);
     std::process::exit(1);
@@ -26,15 +57,39 @@ fn fail_and_exit(start_time: &std::time::Instant, message: &str) -> ! {
 async fn main() -> Result<()> {
     let start_time = Instant::now();
     let args: Vec<String> = std::env::args().collect();
+    let program_name = &args[0];
 
-    // Get the download path by finding the first argument that isn't --verify
+    // Handle special flags first
+    if args.len() == 1 {
+        // No arguments provided
+        show_help(program_name);
+        std::process::exit(0);
+    }
+
+    // Check for version or help flags
+    for arg in &args[1..] {
+        match arg.as_str() {
+            "--version" | "-V" => {
+                show_version();
+                std::process::exit(0);
+            }
+            "--help" | "-h" => {
+                show_help(program_name);
+                std::process::exit(0);
+            }
+            _ => {}
+        }
+    }
+
+    // Get the download path by finding the first argument that isn't a flag
     let download_path = args
         .iter()
         .skip(1) // Skip program name
-        .find(|arg| *arg != "--verify")
+        .find(|arg| !arg.starts_with("--") && !arg.starts_with("-"))
         .map(|path| PathBuf::from(path))
         .ok_or_else(|| {
-            eprintln!("Usage: {} <download_path> [--verify]", args[0]);
+            eprintln!("Error: No download path provided.\n");
+            show_help(program_name);
             anyhow::anyhow!("No download path provided")
         })?;
 

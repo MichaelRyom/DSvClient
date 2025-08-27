@@ -2,6 +2,10 @@
 name = "DSvClient"
 version = "0.4.0"
 edition = "2021"
+description = "VMware vCenter and ESXi patch downloading tool with checksum verification"
+authors = ["Michael Ryom"]
+license = "MIT"
+repository = "https://github.com/MichaelRyom/DSvClient"
 
 [dependencies]
 tokio = { version = "1.40", features = ["full"] }
