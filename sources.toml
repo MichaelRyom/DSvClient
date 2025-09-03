@@ -96,7 +96,7 @@ description = "vCenter 8.x upgrade patches"
 # type = "Host"
 # description = "Special source with custom token"
 
-# VMware VVS (vSphere Version and Vulnerability Status) API with OAuth authentication
+# VMware VVS API with OAuth authentication
 [[sources]]
 url = "https://vvs.broadcom.com/v1/compatible/vcg/bundles/all?format=gz"
 enabled = true
