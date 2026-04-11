@@ -2,6 +2,68 @@
 
 Check out [https://michaelryom.dk/dsvclient-new-patch-downloading-tool-for-vcenter](https://michaelryom.dk/dsvclient-new-patch-downloading-tool-for-vcenter)
 
+## 📁 Version 0.8.0
+**Released:** April 11, 2026
+
+### On-Disk Layout Now Mirrors the Broadcom CDN (VCSA)
+Previous releases downloaded every VCSA patch file (RPMs, container image
+blobs, container manifests, patch-scripts zips, root metadata) into a single
+flat directory at `valm/<version>/`. That worked for local inspection and for
+ISO repackaging, but it did **not** match the layout the appliance expects: the
+real Broadcom CDN, a real VCSA patch ISO, and `software-packages stage --url`
+all put everything except the top-level manifests under `package-pool/`.
+
+As a result, the downloaded tree could not be served over HTTP as a drop-in
+replacement for the CDN, and the ISO-building helper had to reconstruct
+`package-pool/` by hand — which broke in 0.7.0 once blobs, `.manifest`
+container files, and the two `*-patch-scripts.zip` script bundles entered the
+picture (they ended up at the ISO root instead of in `package-pool/`, causing
+`software-packages stage --iso` to fail with *"Staging failed. Retry to resume
+from the current state."*).
+
+**What changed in 0.8.0:**
+- **`get_vcsa_file_path` preserves the relative path from each package's
+  `<location>` / `relativepath` entry** instead of stripping it to the
+  basename. Files whose location has a `package-pool/` prefix now land at
+  `valm/<version>/package-pool/<file>`; bare root metadata files
+  (`manifest-latest.xml`, `rpm-manifest.json`, and their `.sha256` / `.sign`
+  sidecars) still land at `valm/<version>/<file>`.
+- **`..` and `.` path segments are stripped defensively** so a hostile
+  manifest can't write outside the version directory.
+- **`download_file` already creates missing parent directories**, so the
+  `package-pool/` subdir is created on demand — no schema migration needed
+  inside DSvClient itself.
+
+**Result:** a freshly-downloaded `valm/<version>/` tree can be:
+1. Served directly over HTTP as a local mirror of the Broadcom CDN for
+   `software-packages stage --url http://host/valm/<version>/`.
+2. Turned into a VCSA patch ISO by straight recursive copy — no need to
+   partition files between root and `package-pool/` at ISO-build time.
+3. Inspected locally the same way as before — only the layout has changed.
+
+**Migrating an existing flat repo (no re-download):**
+```sh
+cd /path/to/VMware-repo/valm/<version>
+mkdir -p package-pool
+for f in *; do
+  case "$f" in
+    package-pool|manifest-latest.xml|manifest-latest.xml.sha256|manifest-latest.xml.sign|\
+    rpm-manifest.json|rpm-manifest.json.sha256|rpm-manifest.json.sign) ;;
+    *) mv -- "$f" package-pool/ ;;
+  esac
+done
+```
+PowerShell equivalent:
+```powershell
+$src = 'C:\VMware-repo\valm\8.0.3.00800'
+$keep = @('manifest-latest.xml','manifest-latest.xml.sha256','manifest-latest.xml.sign',
+          'rpm-manifest.json','rpm-manifest.json.sha256','rpm-manifest.json.sign')
+New-Item -ItemType Directory -Path (Join-Path $src 'package-pool') -Force | Out-Null
+Get-ChildItem -Path $src -File |
+  Where-Object { $keep -notcontains $_.Name } |
+  Move-Item -Destination (Join-Path $src 'package-pool')
+```
+
 ## 📦 Version 0.7.0
 **Released:** April 11, 2026
 

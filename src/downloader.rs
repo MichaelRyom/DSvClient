@@ -1489,14 +1489,25 @@ impl Downloader {
     }
 
     fn get_vcsa_file_path(&self, version: &str, file: &str) -> PathBuf {
-        // Extract filename from path (after last /)
-        let filename = file.split('/').last().unwrap_or(file);
-        
-        // Create path: base_path/valm/version/filename
-        self.base_path
-            .join("valm")
-            .join(version)
-            .join(filename)
+        // Mirror the CDN URL layout on disk: a file downloaded from
+        // `<base>/<version>/package-pool/foo.rpm` is saved at
+        // `<base_path>/valm/<version>/package-pool/foo.rpm`, and a bare
+        // root file like `manifest-latest.xml` lands at
+        // `<base_path>/valm/<version>/manifest-latest.xml`.
+        //
+        // Preserving the `package-pool/` prefix lets the downloaded repo be
+        // served directly over HTTP as a drop-in replacement for the Broadcom
+        // CDN (for `software-packages stage --url ...`), and it lets the VCSA
+        // patch ISO be built via a straight recursive copy instead of having
+        // to reconstruct `package-pool/` from a flat pile of files.
+        //
+        // `..` and `.` segments are stripped defensively so a hostile manifest
+        // can't write outside the version directory.
+        let mut path = self.base_path.join("valm").join(version);
+        for segment in file.split('/').filter(|s| !s.is_empty() && *s != ".." && *s != ".") {
+            path = path.join(segment);
+        }
+        path
     }
 
     async fn process_vcsa_manifest(&self, content: &str, version: &str, base_url: &str) -> Result<()> {
