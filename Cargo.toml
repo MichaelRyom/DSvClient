@@ -1,6 +1,6 @@
 [package]
 name = "DSvClient"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 description = "VMware vCenter and ESXi patch downloading tool with checksum verification"
 authors = ["Michael Ryom"]

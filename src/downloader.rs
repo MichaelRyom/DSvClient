@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use crate::parser::{Vendor, XmlParser};
+use crate::parser::{Vendor, VcsaPackage, XmlParser};
 use crate::process::{FileType, ProcessManager, Source};
 use crate::verify::VerificationManager;
 use anyhow::Result;
@@ -452,6 +452,24 @@ impl Downloader {
                                             }
                                         }
                                         Err(e) => warn!("Error reading manifest file: {}", e),
+                                    }
+                                }
+
+                                // rpm-manifest.json lists additional files that are NOT referenced in
+                                // manifest-latest.xml - notably container image blobs (.blob) and
+                                // container manifests (.manifest). Without these, `software-packages
+                                // stage --iso` fails on the VCSA because the stage step can't find
+                                // the container layers referenced by the patch metadata.
+                                if file.ends_with("rpm-manifest.json") {
+                                    match tokio::fs::read_to_string(&target_path).await {
+                                        Ok(json_content) => {
+                                            if let Err(e) = this.process_vcsa_rpm_manifest_json(&json_content, &version, &processed_base_url).await {
+                                                warn!("Error processing rpm-manifest.json: {}", e);
+                                            } else {
+                                                info!("Successfully processed VCSA rpm-manifest.json");
+                                            }
+                                        }
+                                        Err(e) => warn!("Error reading rpm-manifest.json file: {}", e),
                                     }
                                 }
                             }
@@ -1482,9 +1500,31 @@ impl Downloader {
     }
 
     async fn process_vcsa_manifest(&self, content: &str, version: &str, base_url: &str) -> Result<()> {
-        let start_time = std::time::Instant::now();
         let packages = self.xml_parser.parse_vcsa_packages(content)?;
-        info!("Found {} packages in VCSA manifest for version {}", packages.len(), version);
+        info!("Found {} packages in VCSA manifest-latest.xml for version {}", packages.len(), version);
+        self.queue_vcsa_packages(packages, version, base_url, "manifest-latest.xml").await
+    }
+
+    /// Parse VCSA rpm-manifest.json and queue any files it lists that aren't
+    /// already covered by manifest-latest.xml (blobs, container manifests, and
+    /// any extra RPMs listed only in the JSON).
+    async fn process_vcsa_rpm_manifest_json(&self, content: &str, version: &str, base_url: &str) -> Result<()> {
+        let packages = self.xml_parser.parse_vcsa_rpm_manifest_json(content)?;
+        info!("Found {} packages in VCSA rpm-manifest.json for version {}", packages.len(), version);
+        self.queue_vcsa_packages(packages, version, base_url, "rpm-manifest.json").await
+    }
+
+    /// Shared back-end for processing a list of VcsaPackage entries: builds URLs,
+    /// skips already-processed / already-valid files, and spawns concurrent
+    /// download tasks.
+    async fn queue_vcsa_packages(
+        &self,
+        packages: Vec<VcsaPackage>,
+        version: &str,
+        base_url: &str,
+        source_label: &str,
+    ) -> Result<()> {
+        let start_time = std::time::Instant::now();
 
         let mut tasks = Vec::new();
         let max_concurrent = self.verifier.config.verification.max_concurrent_files();
@@ -1492,11 +1532,13 @@ impl Downloader {
 
         for package in packages {
             let location = package.location.clone();
+            // pkg_info is only used for log output - use the filename with the
+            // package-pool/ prefix stripped, keeping the file extension so that
+            // non-RPM entries (like .blob / .manifest) are still readable in logs.
             let pkg_info = location
                 .strip_prefix("package-pool/")
-                .and_then(|s| s.strip_suffix(".rpm"))
                 .unwrap_or(&location);
-                
+
             let url = format!(
                 "{}/{}/{}",
                 base_url,
@@ -1598,8 +1640,8 @@ impl Downloader {
         }
         
         let duration = start_time.elapsed();
-        info!("VCSA manifest processing completed in {:?}: {}/{} packages successful, {} errors", 
-              duration, completed, total_tasks, errors);
+        info!("VCSA {} processing completed in {:?}: {}/{} packages successful, {} errors",
+              source_label, duration, completed, total_tasks, errors);
 
         Ok(())
     }

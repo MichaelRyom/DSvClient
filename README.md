@@ -2,6 +2,42 @@
 
 Check out [https://michaelryom.dk/dsvclient-new-patch-downloading-tool-for-vcenter](https://michaelryom.dk/dsvclient-new-patch-downloading-tool-for-vcenter)
 
+## 📦 Version 0.7.0
+**Released:** April 11, 2026
+
+### Full VCSA Patch Downloads (Bug Fix)
+Earlier releases downloaded only the files referenced in `manifest-latest.xml`
+for VCSA sources. That manifest lists RPMs and the two `*-patch-scripts.zip`
+files, but it does **not** include the 24+ content-addressed container image
+layers (`.blob`) and container manifests (`.manifest`) that a VCSA patch ships
+with. Without those files, `software-packages stage --iso` on the appliance
+fails with `"The CD drive does not have a valid patch ISO or has an unsupported
+version"` because the appliance can't find the container layers referenced in
+the patch metadata.
+
+**What changed in 0.7.0:**
+- **New parser** — `XmlParser::parse_vcsa_rpm_manifest_json()` reads
+  `package-pool/rpm-manifest.json` and returns the complete file list that the
+  appliance's own patching code consumes.
+- **New downloader hook** — after `rpm-manifest.json` is downloaded, the VCSA
+  source loop now also parses it and queues every extra file it references
+  (blobs + container manifests + any additional RPMs) using the same URL layout
+  and dedup logic already used for the XML manifest entries.
+- **Shared queue back-end** — the per-file queueing logic in
+  `process_vcsa_manifest` was extracted into a shared helper
+  (`queue_vcsa_packages`) so the XML and JSON paths both go through the same
+  verification / dedup / concurrency machinery.
+- **Log output** — VCSA log lines now preserve the file extension for non-RPM
+  entries (`.blob`, `.manifest`) so they're readable in `DSvClient.log`.
+
+**No configuration changes required.** Existing `sources.toml` VCSA entries
+work as-is — the fix activates automatically whenever `rpm-manifest.json` is in
+the `files = [...]` list (which it already is in the default config).
+
+Result: a VCSA patch folder downloaded with 0.7.0 contains everything
+`software-packages stage --iso --acceptEulas` needs to validate and stage the
+patch on the appliance.
+
 ## 🔐 Version 0.6.0
 **Released:** August 27, 2025
 
@@ -165,4 +201,4 @@ Each platform release now includes:
 - **Improved config file handling** - Better integration with release packages
 
 ### Version Progression
-- v0.3.0 → v0.3.1 → v0.4.0 → v0.5.0 → v0.6.0 (current)
+- v0.3.0 → v0.3.1 → v0.4.0 → v0.5.0 → v0.6.0 → v0.7.0 (current)

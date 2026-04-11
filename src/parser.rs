@@ -469,6 +469,70 @@ impl XmlParser {
         Ok(quick_xml::de::from_str(content)?)
     }
 
+    /// Parse the VCSA rpm-manifest.json file.
+    ///
+    /// This file is a JSON dict keyed by SHA256, with entries like:
+    ///
+    /// ```json
+    /// {
+    ///   "files": {
+    ///     "015dc347...c72565": {
+    ///       "relativepath": "015dc347...c72565.blob",
+    ///       "sha256val":    "015dc347...c72565",
+    ///       "type":         "blob"
+    ///     },
+    ///     "bba8b3bf...1aab5": {
+    ///       "relativepath": "Linux-PAM-1.5.3-6.ph4.x86_64.rpm",
+    ///       "sha256val":    "bba8b3bf...1aab5",
+    ///       "type":         "rpm"
+    ///     }
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// rpm-manifest.json lists extra files that are NOT in manifest-latest.xml -
+    /// notably container image layers (`.blob`) and container manifests
+    /// (`.manifest`). These files are required for `software-packages stage --iso`
+    /// to succeed on the VCSA during appliance patching.
+    ///
+    /// The `relativepath` values in this file are bare filenames (no
+    /// `package-pool/` prefix), so we prepend `package-pool/` to match the URL
+    /// layout the downloader already uses for entries from the XML manifest.
+    pub fn parse_vcsa_rpm_manifest_json(&self, content: &str) -> Result<Vec<VcsaPackage>> {
+        let v: serde_json::Value = serde_json::from_str(content)?;
+        let files = v.get("files")
+            .and_then(|f| f.as_object())
+            .ok_or_else(|| anyhow::anyhow!("rpm-manifest.json is missing a top-level 'files' object"))?;
+
+        let mut packages = Vec::with_capacity(files.len());
+        for (_hash, entry) in files {
+            let relpath = entry.get("relativepath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if relpath.is_empty() {
+                continue;
+            }
+            let sha256 = entry.get("sha256val")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            packages.push(VcsaPackage {
+                name:        relpath.clone(),
+                // Prepend package-pool/ so existing URL-building in downloader.rs
+                // (format!("{base}/{version}/{location}")) resolves to the right URL.
+                location:    format!("package-pool/{}", relpath),
+                version:     String::new(),
+                arch:        String::new(),
+                checksum:    String::new(),
+                checksum256: sha256,
+            });
+        }
+
+        Ok(packages)
+    }
+
     pub fn parse_vcsa_packages(&self, content: &str) -> Result<Vec<VcsaPackage>> {
         let mut reader = quick_xml::Reader::from_str(content);
         let mut buf = Vec::new();
