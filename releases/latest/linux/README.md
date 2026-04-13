@@ -1,4 +1,4 @@
-# DSvClient Linux Release v0.6.0
+# DSvClient Linux Release v0.8.0
 
 ## Files included:
 - DSvClient - The main executable

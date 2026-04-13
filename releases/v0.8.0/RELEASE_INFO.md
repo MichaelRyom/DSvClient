@@ -1,4 +1,4 @@
-# DSvClient Release latest (v0.8.0)
+# DSvClient Release v0.8.0
 
 **Release Date:** 2026-04-13 06:46:12 UTC
 **Commit:** 780afb626346bc19732b5ef2ec83af975eb3a870
@@ -6,8 +6,8 @@
 
 ## Available Platforms
 
-- **windows**: `releases/latest (v0.8.0)/windows/`
-- **linux**: `releases/latest (v0.8.0)/linux/`
+- **windows**: `releases/v0.8.0/windows/`
+- **linux**: `releases/v0.8.0/linux/`
 
 ## Usage
 Download the appropriate platform package and follow the README.md instructions in each platform folder.
